@@ -1,0 +1,53 @@
+{
+  "subnets": [
+    {
+      "id": "subnet_public",
+      "name": "Public Demilitarized Zone",
+      "scope": "External Access"
+    },
+    {
+      "id": "subnet_secure",
+      "name": "Internal Government Core",
+      "scope": "Restricted Access"
+    }
+  ],
+  "nodes": [
+    {"id": "web_server_01", "name": "Public Portal", "ip": "10.0.1.10", "subnet": "subnet_public", "ports": [80, 443], "os": "linux_ubuntu_22.04", "cves": ["CVE-2021-44228"]},
+    {"id": "web_server_02", "name": "Backup Portal", "ip": "10.0.1.11", "subnet": "subnet_public", "ports": [80], "os": "linux_ubuntu_20.04", "cves": ["CVE-2023-38606"]},
+    {"id": "proxy_ingress", "name": "Reverse Proxy Server", "ip": "10.0.1.5", "subnet": "subnet_public", "ports": [443], "os": "linux_debian_11", "cves": []},
+    {"id": "mail_gateway", "name": "Edge Mail Hub", "ip": "10.0.1.25", "subnet": "subnet_public", "ports": [25, 587], "os": "linux_centos_7", "cves": ["CVE-2026-1234"]},
+    {"id": "public_dns", "name": "External Name Server", "ip": "10.0.1.2", "subnet": "subnet_public", "ports": [53], "os": "linux_alpine", "cves": []},
+    
+    {"id": "db_secret_01", "name": "Classified SQL DB", "ip": "10.0.2.99", "subnet": "subnet_secure", "ports": [3306], "os": "windows_server_2016", "cves": ["CVE-2017-0144"]},
+    {"id": "db_backup_01", "name": "Archival Storage Vault", "ip": "10.0.2.100", "subnet": "subnet_secure", "ports": [445], "os": "windows_server_2019", "cves": ["CVE-2022-26925"]},
+    {"id": "pc_admin_01", "name": "Admin Workstation", "ip": "10.0.2.15", "subnet": "subnet_secure", "ports": [22], "os": "windows_11_pro", "cves": []},
+    {"id": "pc_hr_01", "name": "Personnel Database Terminal", "ip": "10.0.2.16", "subnet": "subnet_secure", "ports": [139], "os": "windows_10", "cves": ["CVE-2021-34527"]},
+    {"id": "pc_finance_01", "name": "Payroll Engine", "ip": "10.0.2.17", "subnet": "subnet_secure", "ports": [445], "os": "windows_11_pro", "cves": []},
+    {"id": "auth_controller", "name": "Active Directory Hub", "ip": "10.0.2.1", "subnet": "subnet_secure", "ports": [389, 636], "os": "windows_server_2022", "cves": ["CVE-2022-26923"]},
+    {"id": "file_share_01", "name": "Central SMB Document Pool", "ip": "10.0.2.20", "subnet": "subnet_secure", "ports": [445], "os": "linux_rhel_9", "cves": ["CVE-2021-44228"]},
+    {"id": "app_internal_01", "name": "Logistics Dispatch Panel", "ip": "10.0.2.30", "subnet": "subnet_secure", "ports": [8080], "os": "linux_ubuntu_22.04", "cves": []},
+    {"id": "app_internal_02", "name": "Inventory Microservice", "ip": "10.0.2.31", "subnet": "subnet_secure", "ports": [8081], "os": "linux_ubuntu_22.04", "cves": ["CVE-2023-22515"]},
+    {"id": "dhcp_server", "name": "IP Allocation Core", "ip": "10.0.2.3", "subnet": "subnet_secure", "ports": [67], "os": "linux_debian_12", "cves": []},
+    {"id": "siem_logger", "name": "Security Log Audit Vault", "ip": "10.0.2.4", "subnet": "subnet_secure", "ports": [514], "os": "linux_rocky_9", "cves": []},
+    {"id": "jump_host", "name": "Bastion Transit Node", "ip": "10.0.2.10", "subnet": "subnet_secure", "ports": [22], "os": "linux_ubuntu_22.04", "cves": []},
+    {"id": "dev_machine_01", "name": "Staging Sandbox Terminal", "ip": "10.0.2.40", "subnet": "subnet_secure", "ports": [9000], "os": "linux_ubuntu_20.04", "cves": ["CVE-2022-22965"]},
+    {"id": "printer_secure", "name": "Executive Network Laserjet", "ip": "10.0.2.50", "subnet": "subnet_secure", "ports": [9100], "os": "embedded_rtos", "cves": ["CVE-2024-3456"]},
+    {"id": "iot_hvac", "name": "Facility Climate Monitoring Node", "ip": "10.0.2.60", "subnet": "subnet_secure", "ports": [1883], "os": "embedded_linux", "cves": ["CVE-2023-4567"]}
+  ],
+  "relationships": [
+    {"source": "proxy_ingress", "target": "web_server_01", "type": "LOAD_BALANCE_TRAFFIC"},
+    {"source": "proxy_ingress", "target": "web_server_02", "type": "LOAD_BALANCE_TRAFFIC"},
+    {"source": "web_server_01", "target": "auth_controller", "type": "USER_AUTH_REQUEST"},
+    {"source": "web_server_02", "target": "auth_controller", "type": "USER_AUTH_REQUEST"},
+    {"source": "web_server_01", "target": "db_secret_01", "type": "DATA_QUERY_LINK"},
+    {"source": "web_server_02", "target": "db_secret_01", "type": "DATA_QUERY_LINK"},
+    {"source": "jump_host", "target": "pc_admin_01", "type": "SSH_MANAGEMENT_ROUTE"},
+    {"source": "pc_admin_01", "target": "auth_controller", "type": "DOMAIN_ADMIN_CONTROL"},
+    {"source": "auth_controller", "target": "db_backup_01", "type": "BACKUP_SYNC_LINK"},
+    {"source": "pc_hr_01", "target": "file_share_01", "type": "SMB_READ_WRITE"},
+    {"source": "pc_finance_01", "target": "file_share_01", "type": "SMB_READ_WRITE"},
+    {"source": "app_internal_01", "target": "db_secret_01", "type": "DATA_QUERY_LINK"},
+    {"source": "app_internal_02", "target": "db_secret_01", "type": "DATA_QUERY_LINK"},
+    {"source": "dev_machine_01", "target": "app_internal_01", "type": "HTTP_TEST_ROUTE"}
+  ]
+}

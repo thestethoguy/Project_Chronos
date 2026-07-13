@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+crewai
+langchain
+openai
+neo4j
+scikit-learn
+pandas
+python-dotenv
