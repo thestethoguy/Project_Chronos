@@ -46,10 +46,9 @@ Create a `.env` file in the backend directory with your cloud credentials:
 ```env
 GROQ_API_KEY=gsk_your_api_key_here
 LITELLM_DROP_PARAMS=True
-NEO4J_URI=neo4j+s://066d6050.databases.neo4j.io
+NEO4J_URI="your_connection_string_here"
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=eRLsZmNIBPZxOMTL2Hnyj57IL9UkX4SLN5xvj1ItBTQ
-```
+NEO4J_PASSWORD="your_password_here"
 
 Launch the FastAPI server:
 
