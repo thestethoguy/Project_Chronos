@@ -1,78 +1,84 @@
 # 🛡️ Project Chronos: AI-Driven Cyber Resilience Digital Twin
 
-Project Chronos is a real-time cyberattack simulation and automated incident response infrastructure monitoring dashboard. It bridges the gap between active threat modeling and automated SOAR (Security Orchestration, Automation, and Response) containment. By rendering an interactive, graph-based infrastructure digital twin, Chronos maps visual multi-stage attacks and executes autonomous, active containment strategies to isolate compromised environments before threats propagate.
+**Live Dashboard:** [https://project-chronos-beryl.vercel.app](https://project-chronos-beryl.vercel.app)
+
+**Live API Endpoint:** [https://project-chronos-cxog.onrender.com](https://project-chronos-cxog.onrender.com)
+
+An autonomous, real-time cyberattack simulation and incident response infrastructure monitoring dashboard. Project Chronos maps visual multi-stage attacks and executes active containment strategies without relying on rigid, pre-programmed rules.
+
+Built by **The Ron's** (Priyam Prakash, Ashish, and Aman Aaryan).
 
 ---
 
 ## 🚀 Core Architecture Highlights
 
-Our platform leverages a state-of-the-art decoupled architecture built for speed, resilience, and local independence:
-
-*   **Multi-Agent GenAI Orchestrator:** Powered by **CrewAI** and **Groq**, utilizing the highly optimized **`llama-3.3-70b-versatile`** model. 
-    *   *Red Agent (APT Simulator):* Autonomously discovers network topology and maps multi-stage lateral movements aligned with the MITRE ATT&CK framework.
-    *   *Blue Agent (SOAR Orchestrator):* Performs active incident response, evaluates anomalies, cuts malicious paths, and writes standard compliance audit logs.
-*   **Local Machine Independence:** Intentionally architected to run efficiently within a local development environment. By removing dependencies on heavy cloud vendor lock-ins, Chronos ensures complete deployment flexibility, low latency, and robust cross-platform versatility.
-*   **Machine Learning Engine:** Features an integrated anomaly detection pipeline using an unsupervised **Isolation Forest** model to analyze shifting network telemetry metrics (hour of day, data payload sizes, login failures) and mathematically classify threats.
-*   **Graph Database Topology:** Structured using a **Neo4j** relational architecture that dynamically serves infrastructure nodes, paths, and edges, allowing real-time mapping of network assets.
-*   **Modern Stack:**
-    *   *Frontend:* React 18 + TypeScript + Cytoscape.js (for digital twin canvas rendering).
-    *   *Backend:* FastAPI + LiteLLM (for multi-provider model routing).
+*   **Multi-Agent GenAI Orchestrator:** Powered by **CrewAI** and **Groq** using the highly optimized `llama-3.3-70b-versatile` endpoint. A Red Agent plans multi-stage lateral movements, while a Blue Agent determines active remediation techniques based on the MITRE ATT&CK framework.
+*   **Serverless Graph Topology:** Structured utilizing a **Neo4j AuraDB** cloud relational architecture to dynamically serve infrastructure nodes, edges, and blast-radius visualizers.
+*   **Machine Learning Engine:** Features an integrated anomaly detection pipeline (Unsupervised Machine Learning/Isolation Forest) that captures and scores network telemetry shifts in real-time.
+*   **Modern Full-Stack Engineering:**
+    *   **Frontend:** React 18 + TypeScript + Cytoscape.js (Deployed on Vercel)
+    *   **Backend:** FastAPI + LiteLLM (Deployed on Render)
+*   **Local Development Independence:** Designed to be completely buildable and testable on a local laptop environment, proving robust engineering versatility without mandatory cloud vendor lock-in during the development lifecycle.
 
 ---
 
-## ⚙️ Local Setup Instructions
+## ⚙️ Local Development Setup
 
-### Prerequisites
-*   **Python:** version 3.10+
-*   **Node.js:** version 18+
+To run this architecture locally on your own machine:
 
-### 1. Backend Setup
-1. Navigate to the backend directory:
-   ```bash
-   cd Chronos_Master/backend
-   ```
-2. Initialize and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   # On Windows (PowerShell):
-   .\venv\Scripts\Activate.ps1
-   # On macOS/Linux:
-   source venv/bin/activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Create and configure your `.env` file inside `/backend` with the following variables:
-   ```env
-   GROQ_API_KEY=your_groq_api_key_here
-   LITELLM_DROP_PARAMS=True
-   NEO4J_URI=bolt://localhost:7687
-   NEO4J_USER=neo4j
-   NEO4J_PASSWORD=your_password
-   ```
-5. Launch the FastAPI server:
-   ```bash
-   uvicorn main:app --reload --port 8000
-   ```
+### 1. Prerequisites
+*   Python 3.11+
+*   Node.js 18+
 
-### 2. Frontend Setup
-1. Navigate to the frontend directory:
-   ```bash
-   cd Chronos_Master/frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Configure the `.env` file inside `/frontend`:
-   ```env
-   VITE_API_BASE_URL=http://localhost:8000
-   VITE_USE_MOCK_DATA=false
-   VITE_POLLING_INTERVAL=1000
-   ```
-4. Launch the local development server:
-   ```bash
-   npm run dev
-   ```
-5. Open your browser and navigate to `http://localhost:5173` to access the digital twin topology dashboard.
+### 2. Backend Initialization
+Navigate to the `/backend` directory and set up the Python environment:
+
+```bash
+cd backend
+python -m venv venv
+source venv/Scripts/activate  # On Windows
+# On macOS/Linux: source venv/bin/activate
+pip install --upgrade pip && pip install -r requirements.txt
+```
+
+Create a `.env` file in the backend directory with your cloud credentials:
+
+```env
+GROQ_API_KEY=gsk_your_api_key_here
+LITELLM_DROP_PARAMS=True
+NEO4J_URI=neo4j+s://066d6050.databases.neo4j.io
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=eRLsZmNIBPZxOMTL2Hnyj57IL9UkX4SLN5xvj1ItBTQ
+```
+
+Launch the FastAPI server:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 3. Frontend Initialization
+Navigate to the `/frontend` directory:
+
+```bash
+cd frontend
+npm install
+```
+
+Create a `.env` file in the frontend directory to point to your backend:
+
+```env
+VITE_API_URL=http://localhost:8000
+```
+
+Launch the Vite development server:
+
+```bash
+npm run dev
+```
+
+---
+
+## 🏆 Hackathon Deployment
+
+This project features an automated CI/CD pipeline. Pushes to the main branch automatically trigger zero-downtime production builds across Vercel (Edge UI) and Render (Python Web Services).
