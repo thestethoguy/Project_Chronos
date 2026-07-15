@@ -22,7 +22,7 @@ Built by **The Ron's** (Priyam Prakash, Ashish, and Aman Aaryan).
 
 ---
 
-## ⚙️ Local Development SetuP
+## ⚙️ Local Development Setup
 
 To run this architecture locally on your own machine:
 
