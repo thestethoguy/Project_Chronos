@@ -4,7 +4,7 @@
 
 **Live API Endpoint:** [https://project-chronos-cxog.onrender.com](https://project-chronos-cxog.onrender.com)
 
-DOCUMENTATION : https://drive.google.com/drive/folders/1gJKRSeKd9M9z0vQZMfTF0uVwZsuwEaR5?usp=sharing
+**Project Documentation:** : [https://shorturl.at/dp0JV](https://shorturl.at/dp0JV)
 
 Project Chronos is an autonomous, real-time cyberattack simulation and incident-response
 platform. It renders a live "digital twin" of a network, lets an AI **Red Agent** plan and
