@@ -1489,3 +1489,584 @@ h2 {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Step 8: Cyber-SOC Viewport HUD, Multi-Tier Architecture, Radar & Agent Console ── */
+
+.graph-container {
+  position: relative;
+  height: 620px;
+  overflow: hidden;
+}
+
+@keyframes radarSweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes socPulseRed {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 59, 92, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(255, 59, 92, 0);
+  }
+}
+
+@keyframes socPulseBlue {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(56, 189, 248, 0);
+  }
+}
+
+.graph-radar-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(56, 189, 248, 0.03) 45%,
+    rgba(56, 189, 248, 0.09) 50%,
+    transparent 55%
+  );
+  width: 55%;
+  animation: radarSweep 9s linear infinite;
+}
+
+.graph-radar-overlay.radar-active {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 59, 92, 0.04) 45%,
+    rgba(255, 59, 92, 0.14) 50%,
+    transparent 55%
+  );
+  animation-duration: 4.5s;
+}
+
+.legend-dmz {
+  background: #38bdf8;
+}
+
+.legend-hitl {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.75);
+}
+
+.graph-tier-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #142d47;
+  background: rgba(6, 16, 28, 0.92);
+  overflow-x: auto;
+}
+
+.tier-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid #1e3f5f;
+  background: #0a1b2e;
+  color: #b8d4ee;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.tier-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #38bdf8;
+}
+
+.tier-dmz {
+  border-color: rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
+}
+
+.tier-bastion .tier-dot {
+  background: #60a5fa;
+}
+
+.tier-identity .tier-dot {
+  background: #f59e0b;
+}
+
+.tier-vault {
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+}
+
+.tier-vault .tier-dot {
+  background: #ef4444;
+}
+
+.tier-arrow {
+  color: #466988;
+  font-size: 12px;
+}
+
+.graph-hud-controls {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid #224768;
+  border-radius: 12px;
+  background: rgba(6, 16, 28, 0.92);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+}
+
+.hud-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid #285175;
+  border-radius: 8px;
+  background: #0d2236;
+  color: #d7ebff;
+  font-size: 11px;
+  font-weight: 700;
+  transition: all 0.16s ease;
+}
+
+.hud-btn:hover {
+  border-color: #5bb2ff;
+  background: #14324f;
+}
+
+.hud-btn-locked {
+  border-color: rgba(45, 212, 191, 0.48);
+  background: rgba(13, 62, 58, 0.72);
+  color: #5eead4;
+}
+
+.hud-btn-unlocked {
+  border-color: rgba(251, 191, 36, 0.52);
+  background: rgba(78, 49, 12, 0.72);
+  color: #fde68a;
+}
+
+.hud-zoom-readout {
+  min-width: 42px;
+  text-align: center;
+  color: #8ab4d8;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-telemetry-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid #15304a;
+  background: rgba(6, 15, 26, 0.94);
+}
+
+.telemetry-stat {
+  display: grid;
+  gap: 3px;
+}
+
+.telemetry-stat span {
+  color: #6e8aa4;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.telemetry-stat strong {
+  color: #e4f1ff;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.telemetry-emerald {
+  color: #34d399 !important;
+}
+
+.telemetry-crimson {
+  color: #fb7185 !important;
+}
+
+/* Multi-Agent Reasoning Console */
+
+.agent-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.agent-card-red {
+  border-color: rgba(244, 63, 94, 0.36);
+  background: linear-gradient(
+    155deg,
+    rgba(36, 12, 22, 0.88),
+    rgba(8, 20, 33, 0.95)
+  );
+}
+
+.agent-card-blue {
+  border-color: rgba(56, 189, 248, 0.36);
+  background: linear-gradient(
+    155deg,
+    rgba(10, 29, 48, 0.92),
+    rgba(8, 20, 33, 0.95)
+  );
+}
+
+.agent-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.agent-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-pulse-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agent-pulse-red {
+  background: #ff3b5c;
+  animation: socPulseRed 2s infinite;
+}
+
+.agent-pulse-blue {
+  background: #38bdf8;
+  animation: socPulseBlue 2s infinite;
+}
+
+.agent-eyebrow-red {
+  color: #fda4af;
+  margin-bottom: 3px;
+}
+
+.agent-eyebrow-blue {
+  color: #7dd3fc;
+  margin-bottom: 3px;
+}
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.agent-badge-red {
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  background: rgba(159, 18, 57, 0.32);
+  color: #fecdd3;
+}
+
+.agent-badge-blue {
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(3, 105, 161, 0.32);
+  color: #bae6fd;
+}
+
+.agent-metrics-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agent-kv {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(45, 82, 115, 0.55);
+  border-radius: 10px;
+  background: rgba(6, 15, 25, 0.72);
+}
+
+.agent-kv span {
+  color: #7995b0;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.agent-kv strong {
+  font-size: 12px;
+  color: #e6f2ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.protocol-pill {
+  padding: 4px 9px;
+  border: 1px solid #224461;
+  border-radius: 999px;
+  background: #081827;
+  color: #7895b0;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.protocol-pill.done {
+  border-color: rgba(52, 211, 153, 0.5);
+  background: rgba(6, 78, 59, 0.45);
+  color: #6ee7b7;
+}
+
+.protocol-pill.pending {
+  border-color: rgba(251, 191, 36, 0.6);
+  background: rgba(120, 53, 15, 0.5);
+  color: #fde68a;
+}
+
+.agent-rag-box {
+  display: grid;
+  gap: 3px;
+  padding: 8px 11px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 10px;
+  background: rgba(7, 22, 38, 0.8);
+}
+
+.agent-rag-box span {
+  color: #6ea8d6;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.agent-rag-box strong {
+  color: #dbf0ff;
+  font-size: 12px;
+}
+
+.agent-console-output {
+  margin: 0;
+  max-height: 112px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid #16324c;
+  border-radius: 10px;
+  background: #040c15;
+  color: #b4d4f2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.48;
+  white-space: pre-wrap;
+}
+
+/* SOC Copilot Quick Chips */
+
+.copilot-readonly-badge {
+  padding: 4px 8px;
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  border-radius: 999px;
+  background: rgba(6, 78, 59, 0.35);
+  color: #6ee7b7;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+}
+
+.copilot-quick-chips {
+  display: grid;
+  gap: 7px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #12293f;
+  background: rgba(5, 14, 24, 0.65);
+}
+
+.copilot-chips-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #7b99b5;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.copilot-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.copilot-chip {
+  padding: 5px 9px;
+  border: 1px solid #23496b;
+  border-radius: 8px;
+  background: #0c2135;
+  color: #bfe0ff;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.copilot-chip:hover:not(:disabled) {
+  border-color: #55a8ff;
+  background: #13314d;
+  color: #ffffff;
+}
+
+.copilot-chip-danger {
+  border-color: rgba(244, 63, 94, 0.42);
+  background: rgba(76, 15, 29, 0.45);
+  color: #fecdd3;
+}
+
+.copilot-chip-danger:hover:not(:disabled) {
+  border-color: #fb7185;
+  background: rgba(112, 20, 40, 0.65);
+}
+
+/* NodeDetails Asset Inspector Enhancements */
+
+.asset-status-pill {
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.asset-status-default {
+  border: 1px solid rgba(96, 165, 250, 0.4);
+  background: rgba(30, 58, 138, 0.35);
+  color: #93c5fd;
+}
+
+.asset-status-compromised {
+  border: 1px solid rgba(251, 113, 133, 0.55);
+  background: rgba(136, 19, 55, 0.48);
+  color: #fecdd3;
+}
+
+.asset-status-isolated {
+  border: 1px solid rgba(45, 212, 191, 0.5);
+  background: rgba(17, 94, 89, 0.45);
+  color: #5eead4;
+}
+
+.mono-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.subnet-badge-dmz {
+  color: #38bdf8;
+  font-size: 12px;
+}
+
+.subnet-badge-core {
+  color: #fbbf24;
+  font-size: 12px;
+}
+
+.cve-tag {
+  border-color: rgba(244, 63, 94, 0.48) !important;
+  background: rgba(88, 17, 34, 0.55) !important;
+  color: #fda4af !important;
+}
+
+.muted-detail-note {
+  margin: 6px 0 0;
+  color: #6b859e;
+  font-size: 12px;
+}
+
+.neighbor-route-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.neighbor-route-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 9px;
+  border: 1px solid #1b3a56;
+  border-radius: 8px;
+  background: #081726;
+  font-size: 11px;
+}
+
+.route-arrow {
+  color: #5fa8ff;
+}
+
+.route-type-badge {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #102a42;
+  color: #8cc4f8;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+@media (max-width: 980px) {
+  .agent-telemetry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-telemetry-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -1,73 +1,80 @@
-import type { NetworkNode } from "../types/simulation";
+import type { NetworkEdge, NetworkNode } from "../types/simulation";
 
 interface NodeDetailsProps {
   node?: NetworkNode;
+  edges?: NetworkEdge[];
 }
 
-export function NodeDetails({
-  node,
-}: NodeDetailsProps) {
+export function NodeDetails({ node, edges = [] }: NodeDetailsProps) {
+  const inboundEdges = node
+    ? edges.filter((e) => e.target === node.id)
+    : [];
+  const outboundEdges = node
+    ? edges.filter((e) => e.source === node.id)
+    : [];
+
+  const isDmz =
+    node?.subnet === "public_dmz" ||
+    node?.type === "public_dmz" ||
+    node?.type === "dmz-asset";
+
   return (
-    <section className="panel side-panel-section">
+    <section className="panel side-panel-section asset-inspector-panel">
       <div className="panel-heading compact">
         <div>
-          <p className="eyebrow">
-            SELECTED ASSET
-          </p>
-
-          <h2>Node Details</h2>
+          <p className="eyebrow">SOC ASSET INSPECTOR</p>
+          <h2>Node Telemetry &amp; Exposure</h2>
         </div>
+        {node && (
+          <span className={`asset-status-pill asset-status-${node.status}`}>
+            {node.status.toUpperCase()}
+          </span>
+        )}
       </div>
 
       {!node ? (
-        <p className="empty-state">
-          Select a node from the graph to inspect it.
-        </p>
+        <div className="empty-state">
+          <p style={{ marginBottom: 6, color: "#9eb8d0", fontWeight: 600 }}>
+            No Asset Selected
+          </p>
+          <p style={{ margin: 0, fontSize: 12 }}>
+            Click any node in the Digital Twin graph to inspect its IP, subnet
+            tier, open ports, CVEs, and lateral-movement neighbors.
+          </p>
+        </div>
       ) : (
         <div className="details-list">
           <div>
-            <span>Name</span>
+            <span>Device ID</span>
+            <strong className="mono-id">{node.id}</strong>
+          </div>
+
+          <div>
+            <span>Display Name</span>
             <strong>{node.label}</strong>
           </div>
 
           <div>
-            <span>Type</span>
-            <strong>{node.type}</strong>
-          </div>
-
-          <div>
-            <span>Status</span>
+            <span>Subnet Scope</span>
             <strong
-              className={`text-${node.status}`}
+              className={
+                isDmz ? "subnet-badge-dmz" : "subnet-badge-core"
+              }
             >
-              {node.status}
+              {isDmz
+                ? "PUBLIC DMZ (External)"
+                : "INTERNAL CORE (Restricted)"}
             </strong>
           </div>
 
           <div>
-            <span>IP Address</span>
-            <strong>{node.ipAddress}</strong>
+            <span>IPv4 Address</span>
+            <strong className="mono-id">{node.ipAddress}</strong>
           </div>
 
           <div>
             <span>Operating System</span>
-            <strong>
-              {node.operatingSystem || "Unknown"}
-            </strong>
-          </div>
-
-          <div>
-            <span>Software</span>
-            <strong>
-              {node.softwareName || "Unknown"}
-            </strong>
-          </div>
-
-          <div>
-            <span>Version</span>
-            <strong>
-              {node.softwareVersion || "Unknown"}
-            </strong>
+            <strong>{node.operatingSystem || "Linux / Unknown"}</strong>
           </div>
 
           <div>
@@ -76,40 +83,25 @@ export function NodeDetails({
           </div>
 
           <div>
-            <span>Critical Service</span>
+            <span>Crown-Jewel / Critical</span>
             <strong
               className={
-                node.isCriticalService
-                  ? "critical-service-text"
-                  : ""
+                node.isCriticalService ? "critical-service-text" : ""
               }
             >
-              {node.isCriticalService ? "Yes" : "No"}
+              {node.isCriticalService ? "HIGH-VALUE TARGET" : "Standard Tier"}
             </strong>
           </div>
 
-          {node.businessService && (
-            <div>
-              <span>Business Service</span>
-              <strong>
-                {node.businessService}
-              </strong>
-            </div>
-          )}
-
           <div className="vulnerability-block">
-            <span>Open Ports</span>
-
+            <span>Open TCP/UDP Ports</span>
             {node.openPorts.length === 0 ? (
-              <p>No open ports reported.</p>
+              <p className="muted-detail-note">No exposed ports reported.</p>
             ) : (
               <div className="tag-list">
                 {node.openPorts.map((port) => (
-                  <span
-                    className="detail-tag"
-                    key={port}
-                  >
-                    {port}
+                  <span className="detail-tag" key={port}>
+                    PORT {port}
                   </span>
                 ))}
               </div>
@@ -117,36 +109,65 @@ export function NodeDetails({
           </div>
 
           <div className="vulnerability-block">
-            <span>Known CVEs</span>
-
+            <span>Known CVEs ({node.knownCves.length})</span>
             {node.knownCves.length === 0 ? (
-              <p>No known CVEs.</p>
+              <p className="muted-detail-note">0 known CVEs on record.</p>
             ) : (
-              <ul>
+              <div className="tag-list">
                 {node.knownCves.map((cve) => (
-                  <li key={cve}>
+                  <span className="detail-tag cve-tag" key={cve}>
                     {cve}
-                  </li>
+                  </span>
                 ))}
-              </ul>
+              </div>
             )}
           </div>
 
           <div className="vulnerability-block">
-            <span>Vulnerabilities</span>
-
-            {node.vulnerabilities.length === 0 ? (
-              <p>No known vulnerabilities.</p>
+            <span>
+              Inbound Connections ({inboundEdges.length})
+            </span>
+            {inboundEdges.length === 0 ? (
+              <p className="muted-detail-note">
+                None (Perimeter Entry / Isolated)
+              </p>
             ) : (
-              <ul>
-                {node.vulnerabilities.map(
-                  (item) => (
-                    <li key={item}>
-                      {item}
-                    </li>
-                  )
-                )}
-              </ul>
+              <div className="neighbor-route-list">
+                {inboundEdges.map((edge) => (
+                  <div key={edge.id} className="neighbor-route-chip">
+                    <span className="mono-id">{edge.source}</span>
+                    <span className="route-arrow">➔</span>
+                    <span className="mono-id">{node.id}</span>
+                    {edge.type && (
+                      <small className="route-type-badge">{edge.type}</small>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="vulnerability-block">
+            <span>
+              Outbound Lateral Routes ({outboundEdges.length})
+            </span>
+            {outboundEdges.length === 0 ? (
+              <p className="muted-detail-note">
+                None (Terminal Data Tier / Sink)
+              </p>
+            ) : (
+              <div className="neighbor-route-list">
+                {outboundEdges.map((edge) => (
+                  <div key={edge.id} className="neighbor-route-chip">
+                    <span className="mono-id">{node.id}</span>
+                    <span className="route-arrow">➔</span>
+                    <span className="mono-id">{edge.target}</span>
+                    {edge.type && (
+                      <small className="route-type-badge">{edge.type}</small>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         </div>

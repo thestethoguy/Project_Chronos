@@ -5,7 +5,12 @@ import {
   useState,
 } from "react";
 
-import { FiShield } from "react-icons/fi";
+import {
+  FiActivity,
+  FiCpu,
+  FiCrosshair,
+  FiShield,
+} from "react-icons/fi";
 
 import { Header } from "./components/Header";
 import { RiskSummary } from "./components/RiskSummary";
@@ -41,7 +46,7 @@ function App() {
     useState<SimulationData>(initialMockData);
 
   const [selectedNodeId, setSelectedNodeId] =
-    useState<string | undefined>(undefined);
+    useState<string | undefined>("web_server_01");
 
   const [refreshSignal, setRefreshSignal] =
     useState<number>(0);
@@ -71,8 +76,9 @@ function App() {
   );
 
   const selectedNode = useMemo(() => {
-    return data.nodes.find(
-      (node) => node.id === selectedNodeId
+    return (
+      data.nodes.find((node) => node.id === selectedNodeId) ??
+      data.nodes[0]
     );
   }, [data.nodes, selectedNodeId]);
 
@@ -83,6 +89,9 @@ function App() {
           await getSimulationStatus();
 
         setData(response);
+        if (response.pending_action?.target) {
+          setSelectedNodeId((prev) => prev ?? response.pending_action?.target);
+        }
         setError(undefined);
       } catch (err) {
         console.error(
@@ -205,6 +214,30 @@ function App() {
     setPlaybookOpen(false);
   };
 
+  const anomalyPercent =
+    data.anomaly_score != null
+      ? Math.round(data.anomaly_score * 100)
+      : data.pending_action?.anomaly_score != null
+      ? Math.round(data.pending_action.anomaly_score * 100)
+      : data.status === "idle"
+      ? 12
+      : 82;
+
+  const citedIncident =
+    data.pending_action?.cited_incident ||
+    (data.status === "completed"
+      ? "Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth"
+      : "Standby — RAG vector search triggers on anomaly detection");
+
+  const protocolStage =
+    data.status === "idle"
+      ? 0
+      : data.status === "running"
+      ? 2
+      : data.status === "awaiting_approval"
+      ? 3
+      : 4;
+
   return (
     <main className="app-shell">
       <Header
@@ -254,6 +287,123 @@ function App() {
         status={data.status}
       />
 
+      {/* Live Multi-Agent Reasoning & Telemetry Console */}
+      <section className="agent-telemetry-grid">
+        {/* RED AGENT CARD */}
+        <article className="panel agent-card agent-card-red">
+          <div className="agent-card-header">
+            <div className="agent-title-group">
+              <span className="agent-pulse-dot agent-pulse-red" />
+              <div>
+                <p className="eyebrow agent-eyebrow-red">
+                  OFFENSIVE ADVERSARY EMULATION
+                </p>
+                <h2>
+                  <FiCrosshair style={{ marginRight: 7, verticalAlign: "middle" }} />
+                  Red Agent — APT29 / APT41 Simulator
+                </h2>
+              </div>
+            </div>
+            <span className="agent-badge agent-badge-red">
+              {data.mitre_tactic || "T1550.002 Pass the Hash"}
+            </span>
+          </div>
+
+          <div className="agent-metrics-row">
+            <div className="agent-kv">
+              <span>ENTRY FOOTHOLD</span>
+              <strong className="mono-id">
+                {data.nodes[0]?.id || "proxy_ingress"}
+              </strong>
+            </div>
+            <div className="agent-kv">
+              <span>DISCOVERED CORRIDOR</span>
+              <strong className="mono-id">
+                {data.pending_action
+                  ? `${data.pending_action.source} ➔ ${data.pending_action.target}`
+                  : data.compromised_node
+                  ? `proxy_ingress ➔ ${data.compromised_node}`
+                  : "Scanning DMZ neighbors..."}
+              </strong>
+            </div>
+            <div className="agent-kv">
+              <span>ACTIVE TOOL</span>
+              <strong className="mono-id">graph_scan_neighbors()</strong>
+            </div>
+          </div>
+
+          <pre className="agent-console-output">
+            {data.red_report ||
+              (data.status === "running"
+                ? "[APT-SIM] Probing adjacent graph pathways via graph_scan_neighbors('proxy_ingress')...\n[APT-SIM] Replaying cached NTLM credentials across internal_core subnet..."
+                : "[APT-SIM] Adversary simulator on standby. Click 'Start Simulation' to launch autonomous multi-hop lateral movement.")}
+          </pre>
+        </article>
+
+        {/* BLUE AGENT CARD */}
+        <article className="panel agent-card agent-card-blue">
+          <div className="agent-card-header">
+            <div className="agent-title-group">
+              <span className="agent-pulse-dot agent-pulse-blue" />
+              <div>
+                <p className="eyebrow agent-eyebrow-blue">
+                  BOUNDED-AUTHORITY SOAR DEFENSE
+                </p>
+                <h2>
+                  <FiCpu style={{ marginRight: 7, verticalAlign: "middle" }} />
+                  Blue Agent — ML + RAG + AWS Governance
+                </h2>
+              </div>
+            </div>
+            <span className="agent-badge agent-badge-blue">
+              <FiActivity style={{ marginRight: 5 }} />
+              ML Anomaly: {anomalyPercent}%
+            </span>
+          </div>
+
+          {/* 4-Step Mandatory Protocol Stepper */}
+          <div className="protocol-stepper">
+            <span className={`protocol-pill ${protocolStage >= 1 ? "done" : ""}`}>
+              1. Isolation Forest ML {protocolStage >= 1 ? "✓" : ""}
+            </span>
+            <span className={`protocol-pill ${protocolStage >= 2 ? "done" : ""}`}>
+              2. RAG Incident Cite {protocolStage >= 2 ? "✓" : ""}
+            </span>
+            <span className={`protocol-pill ${protocolStage >= 3 ? "done" : ""}`}>
+              3. AWS Draft (executed:false) {protocolStage >= 3 ? "✓" : ""}
+            </span>
+            <span
+              className={`protocol-pill ${
+                data.status === "awaiting_approval"
+                  ? "pending"
+                  : protocolStage >= 4
+                  ? "done"
+                  : ""
+              }`}
+            >
+              4. HITL Analyst Gate{" "}
+              {data.status === "awaiting_approval"
+                ? "⏳"
+                : protocolStage >= 4
+                ? "✓"
+                : ""}
+            </span>
+          </div>
+
+          <div className="agent-rag-box">
+            <span>RAG HISTORICAL PRECEDENT CITED:</span>
+            <strong>{citedIncident}</strong>
+          </div>
+
+          <pre className="agent-console-output">
+            {data.blue_report ||
+              (data.status === "running"
+                ? "[SOAR-AI] Scoring telemetry via ml_score_anomaly(hour=3, bytes=50000, failed_logins=20)...\n[SOAR-AI] Querying 768-dim incident vector store via rag_retrieve_incidents()..."
+                : "[SOAR-AI] Bounded-authority defense active. Destructive actions (graph_cut_connection) require explicit human-analyst approval.")}
+          </pre>
+        </article>
+      </section>
+
       <div className="dashboard-grid">
         <div className="main-column">
           <NetworkGraph
@@ -274,7 +424,10 @@ function App() {
         </div>
 
         <aside className="side-column">
-          <NodeDetails node={selectedNode} />
+          <NodeDetails
+            node={selectedNode}
+            edges={data.edges}
+          />
 
           <SOCCopilotChat />
 

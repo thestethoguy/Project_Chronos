@@ -1,6 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
-import type { Core } from "cytoscape";
+import type { Core, Stylesheet } from "cytoscape";
+import {
+  FiLock,
+  FiMaximize2,
+  FiMinus,
+  FiPlus,
+  FiUnlock,
+} from "react-icons/fi";
 import { fetchTopology, useMockData } from "../services/api";
 import type {
   NetworkEdge,
@@ -23,6 +30,205 @@ interface NetworkGraphProps {
   actionTaken?: string | null;
 }
 
+const MIN_ZOOM = 0.45;
+const MAX_ZOOM = 1.75;
+
+/**
+ * Assigns every node in the topology to one of 5 architectural columns (0..4)
+ * and spaces nodes evenly so the graph fills the canvas horizontally at 100% zoom.
+ */
+function computeTieredPositions(
+  nodes: NetworkNode[],
+  edges: NetworkEdge[]
+): Record<string, { x: number; y: number }> {
+  const incomingCount = new Map<string, number>();
+  const outgoingCount = new Map<string, number>();
+  for (const n of nodes) {
+    incomingCount.set(n.id, 0);
+    outgoingCount.set(n.id, 0);
+  }
+  for (const e of edges) {
+    incomingCount.set(e.target, (incomingCount.get(e.target) ?? 0) + 1);
+    outgoingCount.set(e.source, (outgoingCount.get(e.source) ?? 0) + 1);
+  }
+
+  const columns: NetworkNode[][] = [[], [], [], [], []];
+
+  for (const node of nodes) {
+    const idLower = `${node.id} ${node.label}`.toLowerCase();
+    const isDmz =
+      node.subnet === "public_dmz" ||
+      node.type === "public_dmz" ||
+      node.type === "dmz-asset" ||
+      /proxy|web|mail|dns|vpn|internet|dmz/i.test(idLower);
+
+    if (isDmz) {
+      const inDeg = incomingCount.get(node.id) ?? 0;
+      const outDeg = outgoingCount.get(node.id) ?? 0;
+      // Ingress gateways / proxies with no inbound edges sit in Tier 0 (far left)
+      if (inDeg === 0 && outDeg > 0) {
+        columns[0].push(node);
+      } else {
+        columns[1].push(node);
+      }
+      continue;
+    }
+
+    // Internal Core categorization into Tiers 2, 3, and 4
+    if (/db|sql|vault|backup|file_share|siem|classified|secret/i.test(idLower)) {
+      columns[4].push(node);
+    } else if (/auth|dc-|domain|app_internal|dhcp|controller/i.test(idLower)) {
+      columns[3].push(node);
+    } else {
+      columns[2].push(node);
+    }
+  }
+
+  // Collapse empty columns so small custom topologies (e.g. 6 nodes) also spread nicely
+  const nonEmptyCols = columns.filter((col) => col.length > 0);
+  const positions: Record<string, { x: number; y: number }> = {};
+
+  const totalCols = Math.max(1, nonEmptyCols.length);
+  const xSpan = totalCols <= 3 ? 680 : 1040;
+  const xStep = totalCols > 1 ? xSpan / (totalCols - 1) : 0;
+  const startX = -xSpan / 2;
+
+  nonEmptyCols.forEach((colNodes, colIndex) => {
+    const x = Math.round(startX + colIndex * xStep);
+    const count = colNodes.length;
+    const yStep = count <= 3 ? 138 : count <= 5 ? 112 : 92;
+    const totalHeight = (count - 1) * yStep;
+    const startY = -totalHeight / 2;
+
+    colNodes.forEach((node, rowIndex) => {
+      positions[node.id] = {
+        x,
+        y: Math.round(startY + rowIndex * yStep),
+      };
+    });
+  });
+
+  return positions;
+}
+
+const GRAPH_STYLESHEET: Stylesheet[] = [
+  {
+    selector: "node",
+    style: {
+      "background-color": "#0d2640",
+      "border-color": "#4da3ff",
+      "border-width": 2.5,
+      width: 52,
+      height: 52,
+      color: "#e6f2ff",
+      label: "data(displayLabel)",
+      "font-size": 10,
+      "font-weight": 600,
+      "text-wrap": "wrap",
+      "text-max-width": "132px",
+      "text-valign": "bottom",
+      "text-margin-y": 8,
+      "text-outline-color": "#050d18",
+      "text-outline-width": 2.5,
+      "overlay-padding": 8,
+    },
+  },
+  {
+    selector: 'node[subnet = "public_dmz"]',
+    style: {
+      "background-color": "#132c47",
+      "border-color": "#38bdf8",
+      shape: "round-octagon",
+    },
+  },
+  {
+    selector: 'node[critical = "true"]',
+    style: {
+      "border-color": "#f59e0b",
+      "border-width": 3.5,
+    },
+  },
+  {
+    selector: 'node[status = "compromised"]',
+    style: {
+      "background-color": "#691426",
+      "border-color": "#ff3b5c",
+      "border-width": 5,
+      width: 58,
+      height: 58,
+      "overlay-color": "#ff3b5c",
+      "overlay-opacity": 0.18,
+    },
+  },
+  {
+    selector: 'node[hitlTarget = "true"]',
+    style: {
+      "background-color": "#5c3409",
+      "border-color": "#fbbf24",
+      "border-width": 5,
+      "border-style": "double",
+      width: 60,
+      height: 60,
+      "overlay-color": "#fbbf24",
+      "overlay-opacity": 0.22,
+    },
+  },
+  {
+    selector: 'node[status = "isolated"]',
+    style: {
+      "background-color": "#0c3b38",
+      "border-color": "#2dd4bf",
+      "border-style": "dashed",
+      "border-width": 4.5,
+      "overlay-color": "#2dd4bf",
+      "overlay-opacity": 0.14,
+    },
+  },
+  {
+    selector: "node:selected",
+    style: {
+      "border-color": "#ffffff",
+      "border-width": 4.5,
+      "overlay-color": "#60a5fa",
+      "overlay-opacity": 0.24,
+    },
+  },
+  {
+    selector: "edge",
+    style: {
+      width: 2,
+      "line-color": "#264e70",
+      "target-arrow-color": "#356892",
+      "target-arrow-shape": "triangle",
+      "arrow-scale": 0.95,
+      "curve-style": "bezier",
+      label: "data(edgeLabel)",
+      "font-size": 8,
+      color: "#6d90b0",
+      "text-rotation": "autorotate",
+      "text-margin-y": -7,
+      "text-outline-color": "#06101c",
+      "text-outline-width": 2,
+      opacity: 0.84,
+    },
+  },
+  {
+    selector: 'edge[active = "true"]',
+    style: {
+      width: 4.5,
+      "line-color": "#ff3b5c",
+      "target-arrow-color": "#ff3b5c",
+      "line-style": "dashed",
+      "line-dash-pattern": [10, 5],
+      "line-dash-offset": 0,
+      color: "#ff9ebb",
+      "font-size": 9,
+      "font-weight": 700,
+      opacity: 1,
+    },
+  },
+];
+
 export function NetworkGraph({
   nodes,
   edges,
@@ -34,12 +240,18 @@ export function NetworkGraph({
   simulationStatus = "idle",
   actionTaken,
 }: NetworkGraphProps) {
+  const cyRef = useRef<Core | null>(null);
   const [liveTopology, setLiveTopology] = useState<NetworkTopologyFile | null>(
     null
   );
   const [loading, setLoading] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string>("");
   const [retryTick, setRetryTick] = useState<number>(0);
+
+  // Scroll-wheel zoom is LOCKED by default so scrolling the dashboard never zooms the canvas
+  const [zoomLocked, setZoomLocked] = useState<boolean>(true);
+  const [zoomPercent, setZoomPercent] = useState<number>(100);
+  const [baselineEdgeCount, setBaselineEdgeCount] = useState<number>(0);
 
   useEffect(() => {
     if (useMockData) return;
@@ -119,7 +331,7 @@ export function NetworkGraph({
         status,
         ipAddress: d.ip,
         operatingSystem: d.os,
-        riskScore: isCritical ? 80 : 45,
+        riskScore: isCritical ? 82 : 45,
         vulnerabilities: [],
         knownCves: d.cves ?? [],
         openPorts: d.ports ?? [],
@@ -154,18 +366,47 @@ export function NetworkGraph({
     actionTaken,
   ]);
 
-  const elements = useMemo(
-    () => [
+  // Track max edge count for "Severed Paths" telemetry counter
+  useEffect(() => {
+    const count = effectiveGraph.edges.length;
+    if (simulationStatus === "idle" || count > baselineEdgeCount) {
+      setBaselineEdgeCount(count);
+    }
+  }, [effectiveGraph.edges.length, simulationStatus, baselineEdgeCount]);
+
+  // Structural signature ONLY changes when nodes or edges are added/removed
+  const topologySignature = useMemo(() => {
+    const nodeKey = effectiveGraph.nodes.map((n) => n.id).join("|");
+    const edgeKey = effectiveGraph.edges
+      .map((e) => `${e.source}->${e.target}`)
+      .join("|");
+    return `${nodeKey}::${edgeKey}`;
+  }, [effectiveGraph.nodes, effectiveGraph.edges]);
+
+  // Structural elements + preset coordinates — recomputed ONLY when topologySignature changes
+  const structuralElements = useMemo(() => {
+    const posMap = computeTieredPositions(
+      effectiveGraph.nodes,
+      effectiveGraph.edges
+    );
+
+    return [
       ...effectiveGraph.nodes.map((node) => ({
         data: {
           id: node.id,
           label: node.label,
+          displayLabel: `${node.label}\n[${node.ipAddress}]`,
           status: node.status,
+          hitlTarget:
+            simulationStatus === "awaiting_approval" &&
+            pendingAction?.target === node.id
+              ? "true"
+              : "false",
           type: node.type,
           subnet: node.subnet ?? "internal_core",
           critical: node.isCriticalService ? "true" : "false",
         },
-        selected: node.id === selectedNodeId,
+        position: posMap[node.id] ?? { x: 0, y: 0 },
       })),
 
       ...effectiveGraph.edges.map((edge) => ({
@@ -173,50 +414,244 @@ export function NetworkGraph({
           id: edge.id,
           source: edge.source,
           target: edge.target,
+          edgeLabel: edge.type ? edge.type.replace(/_/g, " ") : "",
           active: edge.active ? "true" : "false",
         },
       })),
-    ],
-    [effectiveGraph, selectedNodeId]
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topologySignature]);
+
+  const presetLayout = useMemo(
+    () => ({
+      name: "preset",
+      fit: true,
+      padding: 46,
+      animate: false,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [topologySignature]
   );
 
-  const layoutKey = useMemo(
-    () => effectiveGraph.nodes.map((n) => n.id).join("|") || "empty",
-    [effectiveGraph.nodes]
+  // Update node/edge status in-place without re-running layout or resetting camera zoom
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    cy.batch(() => {
+      for (const node of effectiveGraph.nodes) {
+        const ele = cy.getElementById(node.id);
+        if (ele && ele.length > 0) {
+          ele.data("status", node.status);
+          ele.data(
+            "hitlTarget",
+            simulationStatus === "awaiting_approval" &&
+              pendingAction?.target === node.id
+              ? "true"
+              : "false"
+          );
+          if (node.id === selectedNodeId) {
+            ele.select();
+          } else {
+            ele.unselect();
+          }
+        }
+      }
+
+      for (const edge of effectiveGraph.edges) {
+        const ele = cy.getElementById(edge.id);
+        if (ele && ele.length > 0) {
+          ele.data("active", edge.active ? "true" : "false");
+        }
+      }
+    });
+  }, [effectiveGraph, selectedNodeId, simulationStatus, pendingAction]);
+
+  // Keep userZoomingEnabled synchronized with zoomLocked state
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.userZoomingEnabled(!zoomLocked);
+    cy.minZoom(MIN_ZOOM);
+    cy.maxZoom(MAX_ZOOM);
+  }, [zoomLocked]);
+
+  // Animate malicious traffic packets flowing along active attack edges
+  useEffect(() => {
+    if (
+      simulationStatus !== "running" &&
+      simulationStatus !== "awaiting_approval"
+    ) {
+      return;
+    }
+    let offset = 0;
+    const timer = window.setInterval(() => {
+      const cy = cyRef.current;
+      if (!cy) return;
+      offset = (offset - 2) % 30;
+      cy.edges('[active = "true"]').style("line-dash-offset", offset);
+    }, 75);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [simulationStatus]);
+
+  const handleZoomIn = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const next = Math.min(MAX_ZOOM, cy.zoom() * 1.2);
+    cy.zoom({
+      level: next,
+      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 },
+    });
+    setZoomPercent(Math.round(cy.zoom() * 100));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const next = Math.max(MIN_ZOOM, cy.zoom() / 1.2);
+    cy.zoom({
+      level: next,
+      renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 },
+    });
+    setZoomPercent(Math.round(cy.zoom() * 100));
+  }, []);
+
+  const handleFitGraph = useCallback(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.fit(undefined, 46);
+    setZoomPercent(Math.round(cy.zoom() * 100));
+  }, []);
+
+  const dmzCount = effectiveGraph.nodes.filter(
+    (n) => n.subnet === "public_dmz" || n.type === "public_dmz"
+  ).length;
+  const coreCount = effectiveGraph.nodes.length - dmzCount;
+  const compromisedCount = effectiveGraph.nodes.filter(
+    (n) => n.status === "compromised"
+  ).length;
+  const severedCount = Math.max(
+    0,
+    baselineEdgeCount - effectiveGraph.edges.length
   );
 
   return (
     <section className="panel graph-panel">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">LIVE TOPOLOGY</p>
-          <h2>Infrastructure Digital Twin</h2>
+          <p className="eyebrow">LIVE CYBER DIGITAL TWIN TOPOLOGY</p>
+          <h2>Multi-Tier Enterprise Network Architecture</h2>
         </div>
 
         <div className="legend">
           <span>
+            <i className="legend-dmz" />
+            Public DMZ ({dmzCount})
+          </span>
+
+          <span>
             <i className="legend-default" />
-            Normal
+            Internal Core ({coreCount})
           </span>
 
           <span>
             <i className="legend-compromised" />
-            Compromised
+            Compromised ({compromisedCount})
+          </span>
+
+          <span>
+            <i className="legend-hitl" />
+            HITL Target
           </span>
 
           <span>
             <i className="legend-isolated" />
-            Isolated
+            Quarantined
           </span>
 
           <span>
             <i className="legend-attack-path" />
-            Attack Path
+            Packet Attack Flow
           </span>
         </div>
       </div>
 
+      {/* Multi-Tier Subnet Architecture Header Bar */}
+      <div className="graph-tier-banner">
+        <div className="tier-pill tier-dmz">
+          <span className="tier-dot" />
+          TIER 1: PUBLIC DMZ INGRESS
+        </div>
+        <div className="tier-arrow">➔</div>
+        <div className="tier-pill tier-bastion">
+          <span className="tier-dot" />
+          TIER 2: BASTION &amp; WORKSTATIONS
+        </div>
+        <div className="tier-arrow">➔</div>
+        <div className="tier-pill tier-identity">
+          <span className="tier-dot" />
+          TIER 3: IDENTITY &amp; MICROSERVICES
+        </div>
+        <div className="tier-arrow">➔</div>
+        <div className="tier-pill tier-vault">
+          <span className="tier-dot" />
+          TIER 4: CROWN-JEWEL DATA VAULTS
+        </div>
+      </div>
+
       <div className="graph-container">
+        {/* Radar Sweep Visual Overlay */}
+        <div
+          className={`graph-radar-overlay ${
+            simulationStatus === "running" ||
+            simulationStatus === "awaiting_approval"
+              ? "radar-active"
+              : ""
+          }`}
+        />
+
+        {/* On-Canvas Viewport HUD Control Bar */}
+        <div className="graph-hud-controls" role="toolbar" aria-label="Graph Viewport Controls">
+          <button
+            type="button"
+            className="hud-btn"
+            onClick={handleZoomOut}
+            title="Zoom Out"
+          >
+            <FiMinus />
+          </button>
+          <span className="hud-zoom-readout">{zoomPercent}%</span>
+          <button
+            type="button"
+            className="hud-btn"
+            onClick={handleZoomIn}
+            title="Zoom In"
+          >
+            <FiPlus />
+          </button>
+          <button
+            type="button"
+            className="hud-btn"
+            onClick={handleFitGraph}
+            title="Fit Graph to Canvas"
+          >
+            <FiMaximize2 />
+            <span>Fit</span>
+          </button>
+          <button
+            type="button"
+            className={`hud-btn ${zoomLocked ? "hud-btn-locked" : "hud-btn-unlocked"}`}
+            onClick={() => setZoomLocked((prev) => !prev)}
+            title="Toggle mouse-wheel zoom lock"
+          >
+            {zoomLocked ? <FiLock /> : <FiUnlock />}
+            <span>{zoomLocked ? "Scroll Zoom: LOCKED" : "Scroll Zoom: UNLOCKED"}</span>
+          </button>
+        </div>
+
         {!useMockData && loading && !liveTopology ? (
           <div className="graph-state-overlay">
             <p>Loading network topology...</p>
@@ -241,106 +676,79 @@ export function NetworkGraph({
           </div>
         ) : (
           <CytoscapeComponent
-            key={layoutKey}
-            elements={elements}
-            layout={{
-              name: "breadthfirst",
-              directed: true,
-              padding: 40,
-              spacingFactor: 1.5,
-              animate: true,
-            }}
+            key={topologySignature}
+            elements={structuralElements}
+            layout={presetLayout}
+            minZoom={MIN_ZOOM}
+            maxZoom={MAX_ZOOM}
+            wheelSensitivity={0.15}
+            userZoomingEnabled={!zoomLocked}
+            userPanningEnabled={true}
+            boxSelectionEnabled={false}
+            autounselectify={false}
             style={{
               width: "100%",
               height: "100%",
             }}
             cy={(cy: Core) => {
-              cy.removeAllListeners();
+              const isNewInstance = cyRef.current !== cy;
+              cyRef.current = cy;
 
-              cy.on("tap", (event) => {
-                const target = event.target;
+              cy.minZoom(MIN_ZOOM);
+              cy.maxZoom(MAX_ZOOM);
+              cy.userZoomingEnabled(!zoomLocked);
 
-                if (target && target.isNode?.()) {
-                  onNodeSelect(target.id());
-                }
-              });
+              if (isNewInstance) {
+                cy.removeAllListeners();
+
+                cy.on("tap", "node", (event) => {
+                  const target = event.target;
+                  if (target && target.isNode?.()) {
+                    onNodeSelect(target.id());
+                  }
+                });
+
+                cy.on("zoom", () => {
+                  setZoomPercent(Math.round(cy.zoom() * 100));
+                });
+
+                cy.ready(() => {
+                  cy.fit(undefined, 46);
+                  setZoomPercent(Math.round(cy.zoom() * 100));
+                });
+              }
             }}
-            stylesheet={[
-              {
-                selector: "node",
-                style: {
-                  "background-color": "#102b47",
-                  "border-color": "#63adff",
-                  "border-width": 3,
-                  width: 62,
-                  height: 62,
-                  color: "#edf5ff",
-                  label: "data(label)",
-                  "font-size": 11,
-                  "font-weight": 700,
-                  "text-valign": "bottom",
-                  "text-margin-y": 10,
-                  "text-outline-color": "#07111f",
-                  "text-outline-width": 2,
-                },
-              },
-              {
-                selector: 'node[critical = "true"]',
-                style: {
-                  "border-color": "#ffbd5e",
-                  "border-width": 4,
-                },
-              },
-              {
-                selector: 'node[status = "compromised"]',
-                style: {
-                  "background-color": "#651b2a",
-                  "border-color": "#ff5c74",
-                  "border-width": 5,
-                },
-              },
-              {
-                selector: 'node[status = "isolated"]',
-                style: {
-                  "background-color": "#123451",
-                  "border-color": "#53d6ff",
-                  "border-style": "dashed",
-                  "border-width": 5,
-                  opacity: 0.82,
-                },
-              },
-              {
-                selector: "node:selected",
-                style: {
-                  "overlay-color": "#ffffff",
-                  "overlay-opacity": 0.12,
-                  "overlay-padding": 12,
-                  "border-color": "#ffffff",
-                },
-              },
-              {
-                selector: "edge",
-                style: {
-                  width: 2,
-                  "line-color": "#2a5375",
-                  "target-arrow-color": "#2a5375",
-                  "target-arrow-shape": "triangle",
-                  "curve-style": "bezier",
-                  opacity: 0.8,
-                },
-              },
-              {
-                selector: 'edge[active = "true"]',
-                style: {
-                  width: 6,
-                  "line-color": "#ff5c74",
-                  "target-arrow-color": "#ff5c74",
-                  opacity: 1,
-                },
-              },
-            ]}
+            stylesheet={GRAPH_STYLESHEET}
           />
         )}
+      </div>
+
+      {/* Live Graph Telemetry Footer Bar */}
+      <div className="graph-telemetry-bar">
+        <div className="telemetry-stat">
+          <span>ACTIVE ASSETS</span>
+          <strong>{effectiveGraph.nodes.length}</strong>
+        </div>
+        <div className="telemetry-stat">
+          <span>ACTIVE ROUTES</span>
+          <strong>{effectiveGraph.edges.length}</strong>
+        </div>
+        <div className="telemetry-stat">
+          <span>SEVERED PATHS (SOAR)</span>
+          <strong className={severedCount > 0 ? "telemetry-emerald" : ""}>
+            {severedCount}
+          </strong>
+        </div>
+        <div className="telemetry-stat">
+          <span>ACTIVE ATTACK CORRIDOR</span>
+          <strong className={pendingAction ? "telemetry-crimson" : ""}>
+            {pendingAction
+              ? `${pendingAction.source} ➔ ${pendingAction.target}`
+              : simulationStatus === "completed" && actionTaken
+              ? actionTaken
+              : "None (Monitoring Baseline)"}
+          </strong>
+        </div>
       </div>
     </section>
   );

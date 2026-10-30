@@ -108,16 +108,26 @@ export function topologyFileToNodesAndEdges(
 }
 
 function buildMockPendingAction(): PendingAction {
-  const activeEdge =
-    state.edges[1] ?? state.edges[0] ?? { source: "web-server", target: "app-server" };
+  const preferredEdge =
+    state.edges.find(
+      (e) =>
+        (e.source === "web_server_01" && e.target === "db_secret_01") ||
+        (e.source === "web_server_01" && e.target === "auth_controller") ||
+        (e.source === "auth-ctl" && e.target === "dc-01")
+    ) ??
+    state.edges[2] ??
+    state.edges[0] ?? {
+      source: "web_server_01",
+      target: "db_secret_01",
+    };
   return {
-    source: activeEdge.source,
-    target: activeEdge.target,
+    source: preferredEdge.source,
+    target: preferredEdge.target,
     anomaly_score: 0.8742,
     mitre_tactic: "Lateral Movement (T1550.002 - Pass the Hash)",
     cited_incident:
       "Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth",
-    justification: `Isolation Forest scored the event 0.8742 (ANOMALY): Activity outside normal office hours (06:00–22:00); Excessive data transfer (50,000 bytes); High failed-login count (20 attempts). Closest historical incident: 'Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth'. Severing ${activeEdge.source} -> ${activeEdge.target} cuts the lateral-movement path. Awaiting human approval.`,
+    justification: `Isolation Forest scored the event 0.8742 (ANOMALY): Activity outside normal office hours (06:00–22:00); Excessive data transfer (50,000 bytes); High failed-login count (20 attempts). Closest historical incident: 'Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth'. Severing ${preferredEdge.source} -> ${preferredEdge.target} cuts the lateral-movement path. Awaiting human approval.`,
     aws_remediation: {
       role_name: "DomainAdminRole",
       before: {
@@ -155,53 +165,80 @@ const applyNextStep = (): void => {
   }
 
   step += 1;
-  const firstNode = state.nodes[1]?.id ?? state.nodes[0]?.id ?? "web-server";
-  const secondNode = state.nodes[2]?.id ?? state.nodes[1]?.id ?? "app-server";
-  const firstEdge = state.edges[0]?.id ?? "e1";
-  const secondEdge = state.edges[1]?.id ?? firstEdge;
+  const entryNode =
+    state.nodes.find((n) => n.id === "proxy_ingress")?.id ??
+    state.nodes[0]?.id ??
+    "proxy_ingress";
+  const hopNode =
+    state.nodes.find((n) => n.id === "web_server_01")?.id ??
+    state.nodes[1]?.id ??
+    entryNode;
+  const firstEdge =
+    state.edges.find(
+      (e) => e.source === entryNode && e.target === hopNode
+    )?.id ??
+    state.edges[0]?.id ??
+    "e1";
+  const proposal = buildMockPendingAction();
+  const secondEdge =
+    state.edges.find(
+      (e) => e.source === proposal.source && e.target === proposal.target
+    )?.id ??
+    state.edges[1]?.id ??
+    firstEdge;
 
   if (step === 1) {
-    updateNodeStatus(firstNode, "compromised");
+    updateNodeStatus(entryNode, "compromised");
     activateEdge(firstEdge, true);
 
     state.riskScore = 62;
     state.currentStep = 1;
-    state.compromised_node = firstNode;
+    state.compromised_node = entryNode;
+    state.latest_event = `Red Agent breached perimeter foothold '${entryNode}' and invoked graph_scan_neighbors('${entryNode}').`;
 
     addLog(
-      `Red Agent compromised ${firstNode} via initial foothold.`,
+      `Red Agent compromised ${entryNode} via initial foothold.`,
       "attack"
     );
   } else if (step === 2) {
-    updateNodeStatus(secondNode, "compromised");
+    updateNodeStatus(hopNode, "compromised");
     activateEdge(secondEdge, true);
 
     state.riskScore = 82;
     state.currentStep = 2;
-    state.compromised_node = secondNode;
+    state.compromised_node = hopNode;
     state.mitre_tactic = "Lateral Movement (T1550.002 - Pass the Hash)";
+    state.latest_event = `Red Agent pivoted to '${hopNode}' via NTLM credential replay (T1550.002), targeting '${proposal.target}'.`;
 
     addLog(
-      `Red Agent moved laterally to ${secondNode} (T1550.002 Pass the Hash).`,
+      `Red Agent moved laterally to ${hopNode} (T1550.002 Pass the Hash).`,
       "warning"
     );
   } else if (step >= 3) {
-    const proposal = buildMockPendingAction();
+    updateNodeStatus(proposal.target, "compromised");
+    activateEdge(secondEdge, true);
     state.status = "awaiting_approval";
     state.currentStep = 4;
     state.riskScore = 87;
+    state.compromised_node = proposal.target;
+    state.mitre_tactic = proposal.mitre_tactic;
     state.anomaly_score = proposal.anomaly_score;
     state.pending_action = proposal;
+    state.latest_event = `Blue Agent proposes severing ${proposal.source} -> ${proposal.target} — awaiting human analyst approval.`;
+    state.action_taken = "Pending human approval";
     state.red_report =
       `THREAT ACTOR REPORT (tool-grounded)\n` +
-      `a) Technique: T1550.002 — Pass the Hash (Lateral Movement)\n` +
-      `b) Discovered path: ${proposal.source} -> ${proposal.target}\n` +
-      `c) Objective: Escalate privileges on ${proposal.target}.`;
+      `a) Technique: T1550.002 — Pass the Hash (Lateral Movement) via cached NTLM hash from ${entryNode}.\n` +
+      `b) Discovered path (graph_scan_neighbors): ${entryNode} -> ${proposal.source} -> ${proposal.target}.\n` +
+      `c) Tooling: Impacket (smbexec/psexec), CrackMapExec for credential replay.\n` +
+      `d) OPSEC: after-hours activity (03:17 UTC), slow-and-low authentication attempts.\n` +
+      `e) Next objective: reach ${proposal.target} and stage crown-jewel data for exfiltration.`;
     state.blue_report =
       `INCIDENT RESPONSE PROPOSAL (awaiting human approval)\n` +
-      `1) ML verdict: ANOMALY — anomaly_score ${proposal.anomaly_score}\n` +
-      `2) Historical incident cited (RAG): ${proposal.cited_incident}\n` +
-      `3) Proposed containment: sever ${proposal.source} -> ${proposal.target}.`;
+      `1) ML verdict: ANOMALY — anomaly_score ${proposal.anomaly_score.toFixed(4)}.\n` +
+      `2) Historical incident cited (RAG): ${proposal.cited_incident}.\n` +
+      `3) AWS remediation draft (executed=False): ${proposal.aws_remediation?.change_summary ?? "Isolation group drafted"}.\n` +
+      `4) Proposed containment: sever ${proposal.source} -> ${proposal.target} (${proposal.mitre_tactic}).`;
 
     addLog(
       `Blue Agent proposes severing ${proposal.source} -> ${proposal.target} (ML score ${proposal.anomaly_score}) — awaiting human analyst approval.`,
@@ -360,7 +397,7 @@ export const mockFetchTopology = async (): Promise<NetworkTopologyFile> => {
       id: n.id,
       name: n.label,
       ip: n.ipAddress,
-      subnet: idx < 2 ? "public_dmz" : "internal_core",
+      subnet: n.subnet ?? (idx < 5 ? "public_dmz" : "internal_core"),
       ports: n.openPorts,
       os: n.operatingSystem ?? "Linux",
       cves: n.knownCves,

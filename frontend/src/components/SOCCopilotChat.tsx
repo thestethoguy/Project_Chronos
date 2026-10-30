@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FiMessageSquare, FiSend } from "react-icons/fi";
+import { FiMessageSquare, FiSend, FiTerminal } from "react-icons/fi";
 import { askCopilot, CopilotError } from "../services/copilotApi";
 
 type Message =
@@ -7,13 +7,34 @@ type Message =
   | { role: "copilot"; text: string; cypher: string }
   | { role: "error"; text: string };
 
+const QUICK_PROMPTS: Array<{ label: string; query: string; danger?: boolean }> =
+  [
+    {
+      label: "Reachability: Classified SQL DB",
+      query: "Which devices can reach the classified SQL database?",
+    },
+    {
+      label: "Internal Core Subnet Assets",
+      query: "List all devices in the internal core subnet",
+    },
+    {
+      label: "Unpatched CVE Exposure",
+      query: "Which devices have known CVEs?",
+    },
+    {
+      label: "Test Guardrail: DELETE all connections (should block)",
+      query: "DELETE all connections in the network",
+      danger: true,
+    },
+  ];
+
 export function SOCCopilotChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSend() {
-    const question = input.trim();
+  async function submitQuestion(rawQuestion: string) {
+    const question = rawQuestion.trim();
     if (!question || loading) return;
     setMessages((m) => [...m, { role: "user", text: question }]);
     setInput("");
@@ -28,7 +49,7 @@ export function SOCCopilotChat() {
       const status = err instanceof CopilotError ? err.status : undefined;
       const text =
         status === 422
-          ? "That question could not be safely translated into a query — try rephrasing it."
+          ? "Guardrail Blocked (HTTP 422): That question could not be safely translated into a read-only Cypher query."
           : "The Copilot could not answer right now. Please try again.";
       setMessages((m) => [...m, { role: "error", text }]);
     } finally {
@@ -36,24 +57,51 @@ export function SOCCopilotChat() {
     }
   }
 
+  async function handleSend() {
+    await submitQuestion(input);
+  }
+
   return (
     <section className="panel side-panel-section copilot-panel">
       <div className="panel-heading compact">
         <div>
-          <p className="eyebrow">GRAPH QUERY ASSISTANT</p>
+          <p className="eyebrow">NL-TO-CYPHER GRAPH ASSISTANT</p>
           <h2>
             <FiMessageSquare style={{ marginRight: 8, verticalAlign: "middle" }} />
             SOC Copilot
           </h2>
+        </div>
+        <span className="copilot-readonly-badge">READ-ONLY GUARD</span>
+      </div>
+
+      {/* 1-Click Analyst Quick-Query Chips */}
+      <div className="copilot-quick-chips">
+        <span className="copilot-chips-label">
+          <FiTerminal /> Quick Queries:
+        </span>
+        <div className="copilot-chips-row">
+          {QUICK_PROMPTS.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              className={`copilot-chip ${
+                item.danger ? "copilot-chip-danger" : ""
+              }`}
+              disabled={loading}
+              onClick={() => void submitQuestion(item.query)}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </div>
 
       <div className="copilot-messages">
         {messages.length === 0 && (
           <p className="copilot-placeholder">
-            Ask read-only topology questions (e.g., &ldquo;Which devices are in
-            the internal subnet?&rdquo; or &ldquo;Which devices have known
-            CVEs?&rdquo;).
+            Click a quick query above or ask any read-only topology question
+            (e.g., &ldquo;Which devices can reach the classified SQL
+            database?&rdquo;).
           </p>
         )}
 
@@ -65,10 +113,10 @@ export function SOCCopilotChat() {
             <div className="copilot-message-header">
               <strong>
                 {m.role === "user"
-                  ? "Analyst"
+                  ? "SOC Analyst"
                   : m.role === "copilot"
                   ? "SOC Copilot"
-                  : "Validation Notice"}
+                  : "Cypher Safety Validator"}
               </strong>
             </div>
             <p>{m.text}</p>
@@ -77,7 +125,11 @@ export function SOCCopilotChat() {
             )}
           </div>
         ))}
-        {loading && <p className="copilot-thinking">Translating &amp; querying graph...</p>}
+        {loading && (
+          <p className="copilot-thinking">
+            Translating NL ➔ Cypher &amp; querying topology...
+          </p>
+        )}
       </div>
 
       <div className="copilot-input-row">
@@ -85,14 +137,14 @@ export function SOCCopilotChat() {
           className="copilot-input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
+          onKeyDown={(e) => e.key === "Enter" && void handleSend()}
           placeholder="Ask about devices, subnets, CVEs, or routes..."
           disabled={loading}
         />
         <button
           type="button"
           className="button button-primary"
-          onClick={handleSend}
+          onClick={() => void handleSend()}
           disabled={loading || !input.trim()}
         >
           <FiSend />
@@ -102,4 +154,3 @@ export function SOCCopilotChat() {
     </section>
   );
 }
-
