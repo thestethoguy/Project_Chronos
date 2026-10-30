@@ -6,10 +6,26 @@ interface AuditLogProps {
 }
 
 export function AuditLog({ logs }: AuditLogProps) {
-  const logEndRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const prevLenRef = useRef<number>(logs.length);
+  const prevLastIdRef = useRef<string | undefined>(
+    logs[logs.length - 1]?.id
+  );
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const lastId = logs[logs.length - 1]?.id;
+    const hasNewEntry =
+      logs.length > prevLenRef.current ||
+      lastId !== prevLastIdRef.current;
+
+    prevLenRef.current = logs.length;
+    prevLastIdRef.current = lastId;
+
+    // Scroll ONLY the inner overflow container; never call scrollIntoView() on window!
+    if (hasNewEntry && containerRef.current) {
+      containerRef.current.scrollTop =
+        containerRef.current.scrollHeight;
+    }
   }, [logs]);
 
   return (
@@ -21,7 +37,7 @@ export function AuditLog({ logs }: AuditLogProps) {
         </div>
       </div>
 
-      <div className="log-list">
+      <div ref={containerRef} className="log-list audit-log-list">
         {logs.map((log) => (
           <article className={`log-entry log-${log.type}`} key={log.id}>
             <div>
@@ -31,7 +47,6 @@ export function AuditLog({ logs }: AuditLogProps) {
             <p>{log.message}</p>
           </article>
         ))}
-        <div ref={logEndRef} />
       </div>
     </section>
   );

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FiMessageSquare, FiSend, FiTerminal } from "react-icons/fi";
 import { askCopilot, CopilotError } from "../services/copilotApi";
 
@@ -32,6 +32,16 @@ export function SOCCopilotChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const prevLenRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (messages.length > prevLenRef.current && listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+    prevLenRef.current = messages.length;
+  }, [messages]);
 
   async function submitQuestion(rawQuestion: string) {
     const question = rawQuestion.trim();
@@ -96,7 +106,7 @@ export function SOCCopilotChat() {
         </div>
       </div>
 
-      <div className="copilot-messages">
+      <div ref={listRef} className="copilot-messages">
         {messages.length === 0 && (
           <p className="copilot-placeholder">
             Click a quick query above or ask any read-only topology question

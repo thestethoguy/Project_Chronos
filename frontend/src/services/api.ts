@@ -190,13 +190,14 @@ function applyEdgeOverrides(
  */
 function buildLogs(backend: BackendSimulationState): AuditLog[] {
   const logs: AuditLog[] = [...initialMockData.logs];
+  const eventTimestamp = backend.last_updated
+    ? new Date(backend.last_updated).toLocaleTimeString()
+    : initialMockData.logs[0]?.timestamp || "00:00:00";
 
   if (backend.latest_event) {
     logs.push({
       id: `be-event-${backend.session_id || "0"}-${backend.status}`,
-      timestamp: backend.last_updated
-        ? new Date(backend.last_updated).toLocaleTimeString()
-        : new Date().toLocaleTimeString(),
+      timestamp: eventTimestamp,
       message: backend.latest_event,
       type:
         backend.status === "error"
@@ -212,7 +213,7 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
   if (backend.action_taken && backend.action_taken !== "None") {
     logs.push({
       id: `be-action-${backend.session_id || "0"}-${backend.action_taken.slice(0, 12)}`,
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: eventTimestamp,
       message: `Blue Agent: ${backend.action_taken}`,
       type: backend.status === "completed" ? "success" : "defence",
     });
@@ -221,7 +222,7 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
   if (backend.mitre_tactic) {
     logs.push({
       id: `be-tactic-${backend.session_id || "0"}`,
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: eventTimestamp,
       message: `MITRE ATT&CK — ${backend.mitre_tactic}`,
       type: "warning",
     });
@@ -230,7 +231,7 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
   if (backend.pending_action?.cited_incident) {
     logs.push({
       id: `be-rag-${backend.session_id || "0"}`,
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: eventTimestamp,
       message: `RAG Precedent Cited: ${backend.pending_action.cited_incident}`,
       type: "defence",
     });
@@ -239,7 +240,7 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
   if (backend.error) {
     logs.push({
       id: `be-error-${backend.session_id || "0"}`,
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: eventTimestamp,
       message: `Backend error: ${backend.error}`,
       type: "warning",
     });

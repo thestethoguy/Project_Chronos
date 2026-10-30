@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -44,6 +45,7 @@ import type {
 function App() {
   const [data, setData] =
     useState<SimulationData>(initialMockData);
+  const prevStatusRef = useRef(data.status);
 
   const [selectedNodeId, setSelectedNodeId] =
     useState<string | undefined>("web_server_01");
@@ -88,6 +90,7 @@ function App() {
         const response =
           await getSimulationStatus();
 
+        prevStatusRef.current = response.status;
         setData(response);
         if (response.pending_action?.target) {
           setSelectedNodeId((prev) => prev ?? response.pending_action?.target);
