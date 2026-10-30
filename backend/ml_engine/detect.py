@@ -1,7 +1,11 @@
-import pandas as pd
 import joblib
+import pandas as pd
 from pathlib import Path
-from defense_logger import DefenseLogger
+
+try:
+    from backend.ml_engine.defense_logger import DefenseLogger
+except ImportError:
+    from defense_logger import DefenseLogger  # type: ignore[no-redef]
 
 MODEL_FILE = Path("isolation_model.pkl")
 FEATURE_COLUMNS = [

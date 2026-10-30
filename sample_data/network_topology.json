@@ -1,0 +1,17 @@
+{
+  "devices": [
+    {"id": "web-01", "name": "Public Web Server", "ip": "203.0.113.10", "subnet": "public_dmz", "ports": [80, 443], "os": "Ubuntu 22.04", "cves": ["CVE-2023-4863"]},
+    {"id": "vpn-gw", "name": "VPN Gateway", "ip": "203.0.113.11", "subnet": "public_dmz", "ports": [1194], "os": "pfSense", "cves": []},
+    {"id": "auth-ctl", "name": "Auth Controller", "ip": "10.0.1.5", "subnet": "internal_core", "ports": [389, 636], "os": "Windows Server 2019", "cves": ["CVE-2020-1472"]},
+    {"id": "dc-01", "name": "Domain Controller", "ip": "10.0.1.2", "subnet": "internal_core", "ports": [88, 445], "os": "Windows Server 2022", "cves": []},
+    {"id": "wks-17", "name": "Finance Workstation", "ip": "10.0.2.17", "subnet": "internal_core", "ports": [3389], "os": "Windows 11", "cves": []},
+    {"id": "sql-classified", "name": "Classified SQL DB", "ip": "10.0.3.9", "subnet": "internal_core", "ports": [1433], "os": "Windows Server 2019", "cves": ["CVE-2019-1068"]}
+  ],
+  "connections": [
+    {"source": "web-01", "target": "auth-ctl", "type": "USER_AUTH_REQUEST"},
+    {"source": "vpn-gw", "target": "wks-17", "type": "REMOTE_ACCESS"},
+    {"source": "wks-17", "target": "auth-ctl", "type": "USER_AUTH_REQUEST"},
+    {"source": "auth-ctl", "target": "dc-01", "type": "DOMAIN_ADMIN_CONTROL"},
+    {"source": "dc-01", "target": "sql-classified", "type": "DB_ADMIN_ACCESS"}
+  ]
+}

@@ -2,7 +2,10 @@ import axios from "axios";
 
 import type {
   AuditLog,
+  NetworkEdge,
   NetworkNode,
+  NetworkTopologyFile,
+  PendingAction,
   PlaybookImpact,
   PlaybookRequest,
   SimulationData,
@@ -12,11 +15,16 @@ import type {
 import { initialMockData } from "../data/mockData";
 
 import {
+  mockApproveAction,
+  mockFetchTopology,
   mockGetSimulation,
   mockPauseSimulation,
+  mockRejectAction,
   mockResetSimulation,
   mockRunPlaybook,
   mockStartSimulation,
+  mockUploadTopology,
+  topologyFileToNodesAndEdges,
 } from "./mockSimulation";
 
 // ---------------------------------------------------------------------------
@@ -27,10 +35,10 @@ import {
  * VITE_USE_MOCK_DATA defaults to true unless explicitly set to "false".
  * Set VITE_USE_MOCK_DATA=false in .env to hit the real FastAPI backend.
  */
-const useMockData =
+export const useMockData =
   import.meta.env.VITE_USE_MOCK_DATA !== "false";
 
-const api = axios.create({
+export const api = axios.create({
   baseURL:
     import.meta.env.VITE_API_BASE_URL ||
     "http://localhost:8000",
@@ -38,10 +46,14 @@ const api = axios.create({
   timeout: 10000,
 });
 
+// Cache the latest live topology so adaptBackendResponse overlays real device IDs
+let cachedLiveTopology: NetworkTopologyFile | null = null;
+
 // ---------------------------------------------------------------------------
 // Backend response shape (as returned by FastAPI /simulation_status)
 // ---------------------------------------------------------------------------
 interface BackendSimulationState {
+  session_id?: string;
   status: string;
   latest_event: string | null;
   action_taken: string | null;
@@ -50,6 +62,7 @@ interface BackendSimulationState {
   anomaly_score: number | null;
   red_report: string | null;
   blue_report: string | null;
+  pending_action?: PendingAction | null;
   cycles_run: number;
   last_updated: string | null;
   error: string | null;
@@ -64,6 +77,7 @@ function mapStatus(raw: string): SimulationStatus {
   const valid: SimulationStatus[] = [
     "idle",
     "running",
+    "awaiting_approval",
     "paused",
     "completed",
     "error",
@@ -78,14 +92,17 @@ function mapStatus(raw: string): SimulationStatus {
  * Uses anomaly_score (0–1) when available, otherwise infers from status.
  */
 function deriveRiskScore(backend: BackendSimulationState): number {
+  if (backend.status === "completed") {
+    return 35;
+  }
   if (backend.anomaly_score != null) {
     return Math.round(backend.anomaly_score * 100);
   }
   switch (backend.status) {
     case "running":
       return 68;
-    case "completed":
-      return 35;
+    case "awaiting_approval":
+      return 86;
     case "error":
       return 90;
     default:
@@ -98,6 +115,8 @@ function deriveStep(backend: BackendSimulationState): number {
   switch (backend.status) {
     case "running":
       return 2;
+    case "awaiting_approval":
+      return 4;
     case "completed":
       return 6;
     case "error":
@@ -108,30 +127,61 @@ function deriveStep(backend: BackendSimulationState): number {
 }
 
 /**
- * Overlays node statuses based on the compromised_node field.
- * Matches loosely so "web_server_01" hits "web-server" in the topology.
+ * Overlays node statuses based on compromised_node and pending_action.
+ * Matches loosely so "web_server_01" hits "web-server" or exact IDs in the topology.
  */
 function applyNodeOverrides(
   nodes: NetworkNode[],
   compromisedNode: string | null,
-  simulationStatus: string
+  pendingAction: PendingAction | null | undefined,
+  simulationStatus: string,
+  actionTaken: string | null
 ): NetworkNode[] {
-  if (!compromisedNode || simulationStatus === "idle") {
+  if (simulationStatus === "idle") {
     return nodes.map((n) => ({ ...n, status: "default" as const }));
   }
-  return nodes.map((node) => {
-    const hit =
-      node.id.includes(compromisedNode) ||
-      compromisedNode.includes(node.id) ||
-      node.label.toLowerCase().includes(compromisedNode.toLowerCase());
 
-    if (hit) {
-      const nodeStatus =
-        simulationStatus === "completed" ? "isolated" : "compromised";
+  return nodes.map((node) => {
+    const matchesNode = (targetId: string | null | undefined): boolean => {
+      if (!targetId) return false;
+      return (
+        node.id === targetId ||
+        node.id.includes(targetId) ||
+        targetId.includes(node.id) ||
+        node.label.toLowerCase().includes(targetId.toLowerCase())
+      );
+    };
+
+    const isCompromisedTarget =
+      matchesNode(compromisedNode) ||
+      matchesNode(pendingAction?.target) ||
+      matchesNode(pendingAction?.source);
+
+    if (isCompromisedTarget) {
+      const wasSevered =
+        simulationStatus === "completed" &&
+        (!actionTaken || !actionTaken.toLowerCase().includes("rejected"));
+      const nodeStatus = wasSevered ? "isolated" : "compromised";
       return { ...node, status: nodeStatus as const };
     }
     return { ...node, status: "default" as const };
   });
+}
+
+function applyEdgeOverrides(
+  edges: NetworkEdge[],
+  pendingAction: PendingAction | null | undefined,
+  simulationStatus: string
+): NetworkEdge[] {
+  if (simulationStatus === "idle" || !pendingAction) {
+    return edges.map((e) => ({ ...e, active: false }));
+  }
+  return edges.map((edge) => ({
+    ...edge,
+    active:
+      edge.source === pendingAction.source &&
+      edge.target === pendingAction.target,
+  }));
 }
 
 /**
@@ -143,7 +193,7 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
 
   if (backend.latest_event) {
     logs.push({
-      id: `be-event-${Date.now()}`,
+      id: `be-event-${backend.session_id || "0"}-${backend.status}`,
       timestamp: backend.last_updated
         ? new Date(backend.last_updated).toLocaleTimeString()
         : new Date().toLocaleTimeString(),
@@ -153,31 +203,42 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
           ? "warning"
           : backend.status === "running"
           ? "attack"
+          : backend.status === "awaiting_approval"
+          ? "warning"
           : "system",
     });
   }
 
   if (backend.action_taken && backend.action_taken !== "None") {
     logs.push({
-      id: `be-action-${Date.now() + 1}`,
+      id: `be-action-${backend.session_id || "0"}-${backend.action_taken.slice(0, 12)}`,
       timestamp: new Date().toLocaleTimeString(),
       message: `Blue Agent: ${backend.action_taken}`,
-      type: "defence",
+      type: backend.status === "completed" ? "success" : "defence",
     });
   }
 
   if (backend.mitre_tactic) {
     logs.push({
-      id: `be-tactic-${Date.now() + 2}`,
+      id: `be-tactic-${backend.session_id || "0"}`,
       timestamp: new Date().toLocaleTimeString(),
       message: `MITRE ATT&CK — ${backend.mitre_tactic}`,
       type: "warning",
     });
   }
 
+  if (backend.pending_action?.cited_incident) {
+    logs.push({
+      id: `be-rag-${backend.session_id || "0"}`,
+      timestamp: new Date().toLocaleTimeString(),
+      message: `RAG Precedent Cited: ${backend.pending_action.cited_incident}`,
+      type: "defence",
+    });
+  }
+
   if (backend.error) {
     logs.push({
-      id: `be-error-${Date.now() + 3}`,
+      id: `be-error-${backend.session_id || "0"}`,
       timestamp: new Date().toLocaleTimeString(),
       message: `Backend error: ${backend.error}`,
       type: "warning",
@@ -189,28 +250,52 @@ function buildLogs(backend: BackendSimulationState): AuditLog[] {
 
 /**
  * Core adapter — merges the FastAPI snapshot into a complete SimulationData
- * object. Topology nodes/edges are preserved from initialMockData so the
- * Cytoscape canvas is always populated; live fields overlay on top.
+ * object. Uses live topology nodes/edges when available, falling back to
+ * initialMockData so the Cytoscape canvas is always populated.
  */
-function adaptBackendResponse(
-  backend: BackendSimulationState
+export function adaptBackendResponse(
+  backend: BackendSimulationState,
+  topologyOverride?: NetworkTopologyFile | null
 ): SimulationData {
   const status = mapStatus(backend.status);
+  const topo = topologyOverride ?? cachedLiveTopology;
+  const baseGraph = topo
+    ? topologyFileToNodesAndEdges(topo)
+    : { nodes: initialMockData.nodes, edges: initialMockData.edges };
+
   const nodes = applyNodeOverrides(
-    initialMockData.nodes,
+    baseGraph.nodes,
     backend.compromised_node,
+    backend.pending_action,
+    backend.status,
+    backend.action_taken
+  );
+  const edges = applyEdgeOverrides(
+    baseGraph.edges,
+    backend.pending_action,
     backend.status
   );
 
   return {
-    simulationId: `SIM-${String(backend.cycles_run).padStart(3, "0")}`,
+    simulationId: backend.session_id
+      ? `SIM-${backend.session_id.toUpperCase()}`
+      : `SIM-${String(backend.cycles_run || 0).padStart(3, "0")}`,
+    session_id: backend.session_id,
     status,
     riskScore: deriveRiskScore(backend),
     currentStep: deriveStep(backend),
     nodes,
-    edges: initialMockData.edges,
+    edges,
     logs: buildLogs(backend),
     remediations: initialMockData.remediations,
+    pending_action: backend.pending_action ?? null,
+    red_report: backend.red_report,
+    blue_report: backend.blue_report,
+    compromised_node: backend.compromised_node,
+    mitre_tactic: backend.mitre_tactic,
+    anomaly_score: backend.anomaly_score,
+    latest_event: backend.latest_event,
+    action_taken: backend.action_taken,
   };
 }
 
@@ -218,13 +303,80 @@ function adaptBackendResponse(
 // Exported API functions
 // ---------------------------------------------------------------------------
 
+export const fetchTopology = async (): Promise<NetworkTopologyFile> => {
+  if (useMockData) {
+    return mockFetchTopology();
+  }
+  const response = await api.get<NetworkTopologyFile>("/topology");
+  cachedLiveTopology = response.data;
+  return response.data;
+};
+
+export const uploadTopology = async (
+  file: File
+): Promise<{ deviceCount: number; connectionCount: number }> => {
+  if (useMockData) {
+    return mockUploadTopology(file);
+  }
+  const formData = new FormData();
+  formData.append("topology_file", file);
+  const response = await api.post<{
+    deviceCount: number;
+    connectionCount: number;
+  }>("/upload_topology", formData);
+  try {
+    await fetchTopology();
+  } catch {
+    // non-fatal if immediate topology refresh fails
+  }
+  return response.data;
+};
+
+export const approveAction = async (): Promise<{
+  status: string;
+  action_taken: string;
+}> => {
+  if (useMockData) {
+    return mockApproveAction();
+  }
+  const response = await api.post<{ status: string; action_taken: string }>(
+    "/approve_action"
+  );
+  try {
+    await fetchTopology();
+  } catch {
+    // ignore
+  }
+  return response.data;
+};
+
+export const rejectAction = async (): Promise<{
+  status: string;
+  action_taken: string;
+}> => {
+  if (useMockData) {
+    return mockRejectAction();
+  }
+  const response = await api.post<{ status: string; action_taken: string }>(
+    "/reject_action"
+  );
+  return response.data;
+};
+
 export const getSimulationStatus =
   async (): Promise<SimulationData> => {
     if (useMockData) {
       return mockGetSimulation();
     }
 
-    // ✅ Correct backend path: /simulation_status
+    if (!cachedLiveTopology) {
+      try {
+        await fetchTopology();
+      } catch {
+        // fallback to mock nodes if /topology is temporarily unreachable
+      }
+    }
+
     const response =
       await api.get<BackendSimulationState>("/simulation_status");
 
@@ -237,10 +389,8 @@ export const startSimulation =
       return mockStartSimulation();
     }
 
-    // ✅ Correct backend path: /start_simulation (POST returns 202 + message)
     await api.post("/start_simulation");
 
-    // Fetch the updated state immediately so the UI reflects "running"
     const status =
       await api.get<BackendSimulationState>("/simulation_status");
 
@@ -253,8 +403,6 @@ export const pauseSimulation =
       return mockPauseSimulation();
     }
 
-    // Backend has no dedicated pause endpoint — return current state
-    // with status overridden to "paused" so the control bar updates.
     const status =
       await api.get<BackendSimulationState>("/simulation_status");
 
@@ -270,28 +418,16 @@ export const resetSimulation =
       return mockResetSimulation();
     }
 
-    // ✅ Correct backend path: /reset_simulation
     await api.post("/reset_simulation");
+    try {
+      await fetchTopology();
+    } catch {
+      // ignore
+    }
 
-    // Return a clean idle snapshot seeded from mockData
-    return {
-      ...initialMockData,
-      simulationId: "SIM-000",
-      status: "idle",
-      currentStep: 0,
-      nodes: initialMockData.nodes.map((n) => ({
-        ...n,
-        status: "default" as const,
-      })),
-      logs: [
-        {
-          id: `reset-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString(),
-          message: "Simulation state reset — system baseline normal.",
-          type: "system",
-        },
-      ],
-    };
+    const status =
+      await api.get<BackendSimulationState>("/simulation_status");
+    return adaptBackendResponse(status.data);
   };
 
 export const runPlaybook =
@@ -300,7 +436,5 @@ export const runPlaybook =
       return mockRunPlaybook(request);
     }
 
-    // Backend has no /playbook/validate endpoint yet.
-    // Delegate to the mock so the UI remains fully functional.
     return mockRunPlaybook(request);
   };

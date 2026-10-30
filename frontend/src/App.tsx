@@ -9,8 +9,11 @@ import { FiShield } from "react-icons/fi";
 
 import { Header } from "./components/Header";
 import { RiskSummary } from "./components/RiskSummary";
+import { TopologyUploader } from "./components/TopologyUploader";
+import { ApprovalPanel } from "./components/ApprovalPanel";
 import { NetworkGraph } from "./components/NetworkGraph";
 import { NodeDetails } from "./components/NodeDetails";
+import { SOCCopilotChat } from "./components/SOCCopilotChat";
 import { AuditLog } from "./components/AuditLog";
 import { RemediationQueue } from "./components/RemediationQueue";
 import { SimulationControls } from "./components/SimulationControls";
@@ -39,6 +42,9 @@ function App() {
 
   const [selectedNodeId, setSelectedNodeId] =
     useState<string | undefined>(undefined);
+
+  const [refreshSignal, setRefreshSignal] =
+    useState<number>(0);
 
   const [loading, setLoading] =
     useState<boolean>(false);
@@ -78,10 +84,10 @@ function App() {
 
         setData(response);
         setError(undefined);
-      } catch (error) {
+      } catch (err) {
         console.error(
           "Could not retrieve simulation data:",
-          error
+          err
         );
 
         setError(
@@ -90,12 +96,21 @@ function App() {
       }
     }, []);
 
+  const refreshAll =
+    useCallback(async (): Promise<void> => {
+      setRefreshSignal((n) => n + 1);
+      await refreshSimulation();
+    }, [refreshSimulation]);
+
   useEffect(() => {
     void refreshSimulation();
   }, [refreshSimulation]);
 
   useEffect(() => {
-    if (data.status !== "running") {
+    if (
+      data.status !== "running" &&
+      data.status !== "awaiting_approval"
+    ) {
       return;
     }
 
@@ -122,11 +137,12 @@ function App() {
       const response = await action();
 
       setData(response);
+      setRefreshSignal((n) => n + 1);
       setError(undefined);
-    } catch (error) {
+    } catch (err) {
       console.error(
         "Simulation action failed:",
-        error
+        err
       );
 
       setError(
@@ -166,10 +182,10 @@ function App() {
 
       setPlaybookImpact(impact);
       setError(undefined);
-    } catch (error) {
+    } catch (err) {
       console.error(
         "Playbook validation failed:",
-        error
+        err
       );
 
       setError(
@@ -204,12 +220,22 @@ function App() {
 
       <RiskSummary data={data} />
 
+      <TopologyUploader
+        onUploaded={refreshAll}
+      />
+
       <SimulationControls
         status={data.status}
         loading={loading}
         onStart={handleStart}
         onPause={handlePause}
         onReset={handleReset}
+      />
+
+      <ApprovalPanel
+        status={data.status}
+        pendingAction={data.pending_action}
+        onActionResolved={refreshAll}
       />
 
       <div className="playbook-action-row">
@@ -235,6 +261,11 @@ function App() {
             edges={data.edges}
             selectedNodeId={selectedNodeId}
             onNodeSelect={setSelectedNodeId}
+            refreshSignal={refreshSignal}
+            compromisedNode={data.compromised_node}
+            pendingAction={data.pending_action}
+            simulationStatus={data.status}
+            actionTaken={data.action_taken}
           />
 
           <RemediationQueue
@@ -244,6 +275,8 @@ function App() {
 
         <aside className="side-column">
           <NodeDetails node={selectedNode} />
+
+          <SOCCopilotChat />
 
           <AuditLog logs={data.logs} />
         </aside>

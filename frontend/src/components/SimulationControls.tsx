@@ -22,6 +22,7 @@ export function SimulationControls({
   onReset,
 }: SimulationControlsProps) {
   const isRunning = status === "running";
+  const isAwaitingApproval = status === "awaiting_approval";
   const isPaused = status === "paused";
   const isCompleted = status === "completed";
 
@@ -29,7 +30,9 @@ export function SimulationControls({
     ? "Resume"
     : isCompleted
       ? "Start Again"
-      : "Start Simulation";
+      : isAwaitingApproval
+        ? "Awaiting Approval..."
+        : "Start Simulation";
 
   return (
     <section className="simulation-controls">
@@ -48,7 +51,7 @@ export function SimulationControls({
           type="button"
           className="button button-primary"
           onClick={onStart}
-          disabled={loading || isRunning}
+          disabled={loading || isRunning || isAwaitingApproval}
         >
           <FiPlay />
           {startButtonText}
@@ -68,7 +71,7 @@ export function SimulationControls({
           type="button"
           className="button button-reset"
           onClick={onReset}
-          disabled={loading}
+          disabled={loading || isRunning}
         >
           <FiRotateCcw />
           Reset

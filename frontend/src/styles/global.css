@@ -1173,3 +1173,319 @@ h2 {
     width: 100%;
   }
 }
+
+/* Phase 2: awaiting_approval status, ApprovalPanel, TopologyUploader, SOCCopilotChat */
+
+.status-awaiting_approval {
+  color: #ffb44f;
+  background: #ffb44f;
+}
+
+.timeline-status-awaiting_approval {
+  color: #ffd085;
+  background: rgba(255, 180, 79, 0.18);
+}
+
+.uploader-panel {
+  margin-bottom: 16px;
+  padding: 14px 18px;
+}
+
+.uploader-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.uploader-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.uploader-file-input {
+  padding: 7px 10px;
+  border: 1px solid #264866;
+  border-radius: 10px;
+  background: #0a1b2c;
+  color: #c8dcf0;
+  font-size: 12px;
+}
+
+.uploader-feedback p {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.uploader-success {
+  color: #63e8b7;
+}
+
+.uploader-error {
+  color: #ff8c9e;
+}
+
+.approval-panel {
+  margin-bottom: 18px;
+  border: 1px solid #c97d28;
+  background: linear-gradient(
+    145deg,
+    rgba(42, 25, 11, 0.94),
+    rgba(16, 22, 34, 0.96)
+  );
+  box-shadow: 0 18px 50px rgba(255, 165, 52, 0.14);
+}
+
+.approval-panel-heading {
+  border-bottom-color: rgba(201, 125, 40, 0.35);
+}
+
+.approval-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #ffbf69;
+}
+
+.approval-badge {
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 191, 105, 0.45);
+  border-radius: 999px;
+  color: #ffd396;
+  background: rgba(255, 170, 59, 0.16);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.approval-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+.approval-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.approval-metric-box {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid #2a4966;
+  border-radius: 12px;
+  background: rgba(8, 20, 33, 0.85);
+}
+
+.approval-metric-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #89a5bf;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.approval-route {
+  color: #ffd396;
+  font-size: 15px;
+}
+
+.approval-section {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid #1f3b54;
+  border-radius: 12px;
+  background: rgba(7, 17, 29, 0.82);
+}
+
+.approval-incident-cite {
+  margin: 0;
+  color: #79d2ff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.approval-justification {
+  margin: 0;
+  color: #d6e4f2;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.approval-aws-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.button-small {
+  min-height: 28px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.approval-code-block {
+  max-height: 220px;
+  margin: 6px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #19354d;
+  border-radius: 9px;
+  background: #050e18;
+  color: #9ed4ff;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.button-approve {
+  border-color: #279b6f;
+  background: #157350;
+  color: #ebfff7;
+  font-weight: 700;
+}
+
+.button-approve:hover:not(:disabled) {
+  border-color: #4ae0a8;
+  background: #1b8c62;
+}
+
+.button-reject {
+  border-color: #8c2f3f;
+  background: #591b27;
+  color: #ffdce2;
+  font-weight: 700;
+}
+
+.button-reject:hover:not(:disabled) {
+  border-color: #ff5c74;
+  background: #732232;
+}
+
+.graph-state-overlay {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  color: #8ba4bd;
+}
+
+.copilot-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.copilot-messages {
+  display: grid;
+  gap: 10px;
+  max-height: 290px;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.copilot-placeholder {
+  margin: 0;
+  color: #7892ab;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.copilot-message {
+  padding: 10px 12px;
+  border-left: 3px solid #2e6798;
+  border-radius: 8px;
+  background: #0a1928;
+  font-size: 13px;
+}
+
+.copilot-message p {
+  margin: 5px 0 0;
+  color: #d4e4f4;
+  line-height: 1.45;
+}
+
+.copilot-message-user {
+  border-left-color: #5fa8ff;
+}
+
+.copilot-message-copilot {
+  border-left-color: #4ae0a8;
+}
+
+.copilot-message-error {
+  border-left-color: #ffb44f;
+  background: rgba(70, 44, 16, 0.32);
+}
+
+.copilot-message-header strong {
+  color: #8ebfff;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.copilot-cypher {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid #17344d;
+  border-radius: 6px;
+  background: #06101b;
+  color: #7ce3b9;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.copilot-thinking {
+  margin: 0;
+  color: #6fbaf8;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.copilot-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid #132b42;
+}
+
+.copilot-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #264866;
+  border-radius: 10px;
+  background: #0b1d2e;
+  color: #eaf2ff;
+  font-size: 13px;
+  outline: none;
+}
+
+.copilot-input:focus {
+  border-color: #5fa8ff;
+}
+
+@media (max-width: 720px) {
+  .approval-grid {
+    grid-template-columns: 1fr;
+  }
+}

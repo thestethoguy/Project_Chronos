@@ -1,9 +1,30 @@
+# ── Core API ───────────────────────────────────────────────────
 fastapi
-uvicorn
+uvicorn[standard]
+python-multipart
+pydantic>=1.10.19
+httpx>=0.27
+
+# ── Data stores ────────────────────────────────────────────────
+pymongo>=4.6
+mongomock>=4.1          # in-memory MongoDB fallback / tests
+neo4j>=5.14
+
+# ── ML / RAG (100% local embeddings) ───────────────────────────
+scikit-learn>=1.3
+numpy>=1.26
+pandas
+joblib
+
+# ── Config / cloud ─────────────────────────────────────────────
+python-dotenv>=1.0
+boto3
+
+# ── Agents (optional: without them the deterministic tool pipeline + offline copilot are used) ──
 crewai
+litellm
 langchain
 openai
-neo4j
-scikit-learn
-pandas
-python-dotenv
+
+# ── Tests ──────────────────────────────────────────────────────
+pytest>=8

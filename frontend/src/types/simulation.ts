@@ -6,6 +6,7 @@ export type NodeStatus =
 export type SimulationStatus =
   | "idle"
   | "running"
+  | "awaiting_approval"
   | "paused"
   | "completed"
   | "error";
@@ -29,11 +30,44 @@ export type PlaybookAction =
   | "patch-vulnerability"
   | "disable-connection";
 
+export interface TopologyDevice {
+  id: string;
+  name: string;
+  ip: string;
+  subnet: "public_dmz" | "internal_core";
+  ports: number[];
+  os: string;
+  cves: string[];
+}
+
+export interface TopologyConnection {
+  source: string;
+  target: string;
+  type: string;
+}
+
+export interface NetworkTopologyFile {
+  devices: TopologyDevice[];
+  connections: TopologyConnection[];
+}
+
+export interface PendingAction {
+  source: string;
+  target: string;
+  anomaly_score: number;
+  mitre_tactic: string;
+  justification: string;
+  cited_incident?: string;
+  aws_remediation?: Record<string, unknown> | null;
+  proposed_at?: string;
+}
+
 export interface NetworkNode {
   id: string;
   label: string;
   type: string;
   status: NodeStatus;
+  subnet?: "public_dmz" | "internal_core";
 
   ipAddress: string;
   operatingSystem?: string;
@@ -54,6 +88,7 @@ export interface NetworkEdge {
   id: string;
   source: string;
   target: string;
+  type?: string;
   active?: boolean;
 }
 
@@ -100,6 +135,7 @@ export interface PlaybookImpact {
 
 export interface SimulationData {
   simulationId: string;
+  session_id?: string;
   status: SimulationStatus;
   riskScore: number;
 
@@ -112,5 +148,16 @@ export interface SimulationData {
   logs: AuditLog[];
   remediations: Remediation[];
 
+  pending_action?: PendingAction | null;
+  red_report?: string | null;
+  blue_report?: string | null;
+  compromised_node?: string | null;
+  mitre_tactic?: string | null;
+  anomaly_score?: number | null;
+  latest_event?: string | null;
+  action_taken?: string | null;
+
   latestPlaybookImpact?: PlaybookImpact;
 }
+
+export type SimulationSession = SimulationData;

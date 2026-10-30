@@ -1,27 +1,32 @@
 """
-Project Chronos — FastAPI Orchestrator  (v3 — Live State Engine)
-================================================================
-Wires the CrewAI multi-agent simulation directly into HTTP routes
-so Zasefa's React frontend can poll live agent telemetry via API.
+Project Chronos — FastAPI Backend (v2.0.0 — Phase 2: Human-in-the-Loop)
+=======================================================================
+Unifies Phase 1 (CrewAI Red-vs-Blue simulation) with Phase 2:
+  * MongoDB-backed session store (falls back to in-memory when MongoDB is unreachable)
+  * Topology upload / live topology (Neo4j when reachable, in-memory mirror otherwise)
+  * HITL gate: the Blue Agent only PROPOSES; a human approves/rejects
+  * RAG-grounded proposals, AWS remediation drafts and the SOC Copilot
 
-Architecture:
-  POST /start_simulation  → kicks off background CrewAI cycle,
-                             immediately returns 202 Accepted.
-  GET  /simulation_status → returns live snapshot of SIMULATION_STATE,
-                             safe to poll every second from the frontend.
-  GET  /                  → health-check with server uptime & version.
+Endpoints
+  GET  /                  health (uptime, version, orchestrator, database, simulation status)
+  POST /upload_topology   validate + store a network_topology.json
+  GET  /topology          current topology {devices, connections}
+  POST /start_simulation  atomically claim the session (409 if running/awaiting_approval) + background run
+  GET  /simulation_status current session document (includes pending_action)
+  POST /approve_action    human approves  -> graph edge severed + audit entry
+  POST /reject_action     human rejects   -> graph untouched + audit entry
+  POST /reset_simulation  back to idle (409 while running)
+  POST /copilot/ask       SOC Copilot (read-only Cypher; Groq or offline rules)
+  GET  /audit_logs        recent audit.log entries
 
-Environment variables (set in .env):
-    OPENAI_API_KEY    — required by orchestrator.py
-    NEO4J_URI         — bolt://localhost:7687
-    NEO4J_USER        — neo4j username
-    NEO4J_PASSWORD    — neo4j password
+Run from <repo_root>:  uvicorn backend.main:app      or from backend/:  uvicorn main:app
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -29,25 +34,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# ── Load .env BEFORE importing orchestrator (needs OPENAI_API_KEY) ─────────
+try:  # dual-mode import paths (see backend/_bootstrap.py)
+    import _bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import _bootstrap  # noqa: F401
+
 from dotenv import load_dotenv
+
 load_dotenv(Path(__file__).parent / ".env")
 
-# ── FastAPI ─────────────────────────────────────────────────────────────────
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
-# ── Local orchestrator ───────────────────────────────────────────────────────
+from backend.db.mongo import using_fallback
+from backend.db.neo4j_driver import neo4j_status
+from backend.db.session_store import (
+    get_current_session,
+    reset_session,
+    try_start_session,
+    update_current_session,
+)
+from backend.routes import copilot as copilot_routes
+from backend.routes import topology as topology_routes
+
+# ── Orchestrator (bare import on purpose: one module object shared with tests) ─────────────
+orch: Any = None
 try:
-    from orchestrator import run_simulation_cycle
+    import orchestrator as _orch_mod
+
+    orch = _orch_mod
     _ORCHESTRATOR_LOADED = True
-except Exception as _orch_err:          # noqa: BLE001
+    _ORCHESTRATOR_LOAD_ERROR = ""
+except Exception as _orch_err:  # noqa: BLE001
     _ORCHESTRATOR_LOADED = False
     _ORCHESTRATOR_LOAD_ERROR = str(_orch_err)
 
-# ──────────────────────────────────────────────────────────────
-# LOGGING
-# ──────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s — %(message)s",
@@ -55,376 +78,261 @@ logging.basicConfig(
 )
 logger = logging.getLogger("chronos.main")
 
-# ──────────────────────────────────────────────────────────────
-# STEP 1 — GLOBAL IN-MEMORY SIMULATION STATE
-# ──────────────────────────────────────────────────────────────
-# asyncio.Lock makes all reads/writes thread-safe when the
-# background task and the polling endpoint run concurrently.
-_STATE_LOCK = asyncio.Lock()
-
-SIMULATION_STATE: dict[str, Any] = {
-    "status"          : "idle",
-    "latest_event"    : "System baseline normal — no active simulation.",
-    "action_taken"    : "None",
-    "compromised_node": None,
-    "mitre_tactic"    : None,
-    "anomaly_score"   : None,
-    "red_report"      : None,
-    "blue_report"     : None,
-    "cycles_run"      : 0,
-    "last_updated"    : None,
-    "error"           : None,
-}
-
+APP_VERSION = "2.0.0"
 _SERVER_START_TIME = time.time()
+_HITL_LOCK = asyncio.Lock()  # serialises approve/reject so a decision can't be applied twice
 
 
 def _utc_now() -> str:
-    """ISO-8601 UTC timestamp string."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-async def _update_state(**kwargs: Any) -> None:
-    """Atomically merge kwargs into SIMULATION_STATE under the lock."""
-    async with _STATE_LOCK:
-        SIMULATION_STATE.update(kwargs)
-        SIMULATION_STATE["last_updated"] = _utc_now()
-
-
 # ──────────────────────────────────────────────────────────────
-# STEP 2 — BACKGROUND WORKER TASK
+# BACKGROUND WORKER
 # ──────────────────────────────────────────────────────────────
 
 async def _simulation_worker() -> None:
-    """
-    Async background worker that:
-      1. Sets status → 'running' immediately.
-      2. Calls run_simulation_cycle() (blocking CrewAI in thread pool).
-      3. Parses the returned dict and writes live telemetry back to
-         SIMULATION_STATE so the polling endpoint always serves fresh data.
-    """
+    """Runs one cycle and parks the session in `awaiting_approval` with a pending proposal."""
     if not _ORCHESTRATOR_LOADED:
-        await _update_state(
+        update_current_session(
             status="error",
-            latest_event="Orchestrator failed to load — check OPENAI_API_KEY in .env.",
+            latest_event="Orchestrator failed to load — see error field.",
             error=_ORCHESTRATOR_LOAD_ERROR,
         )
-        logger.error("Orchestrator not loaded — aborting worker. Error: %s", _ORCHESTRATOR_LOAD_ERROR)
+        logger.error("Orchestrator not loaded — aborting worker: %s", _ORCHESTRATOR_LOAD_ERROR)
         return
 
-    # ── Phase 0: immediate telemetry update (Red Agent active) ────────────
-    await _update_state(
-        status="running",
-        latest_event="Red Agent active — Mapping attack corridor via graph_scan_neighbors",
+    update_current_session(
+        latest_event="Red Agent active — mapping attack corridor via graph_scan_neighbors",
         action_taken="Pending",
-        compromised_node="proxy_ingress",
-        mitre_tactic="Lateral Movement (T1550.002 — Pass the Hash)",
-        anomaly_score=None,
-        red_report=None,
-        blue_report=None,
+    )
+    try:
+        result: dict[str, Any] = await orch.run_simulation_cycle()
+    except Exception as exc:  # noqa: BLE001
+        update_current_session(status="error", latest_event="Simulation crashed during execution.",
+                               action_taken="None", error=str(exc))
+        logger.error("run_simulation_cycle raised: %s", exc, exc_info=True)
+        return
+
+    if result.get("status") == "error" or not result.get("pending_action"):
+        update_current_session(status="error", latest_event="Agent execution failed — see error field.",
+                               action_taken="None", error=result.get("error") or "No proposal produced")
+        return
+
+    action = result["pending_action"]
+    update_current_session(
+        status="awaiting_approval",
+        latest_event=(f"Blue Agent proposes severing {action['source']} -> {action['target']} "
+                      f"— awaiting human approval."),
+        action_taken="Pending human approval",
+        compromised_node=result.get("compromised_node"),
+        mitre_tactic=result.get("mitre_tactic"),
+        anomaly_score=result.get("anomaly_score"),
+        red_report=result.get("red_report"),
+        blue_report=result.get("blue_report"),
+        pending_action=action,
         error=None,
     )
-    logger.info("Simulation cycle started — background worker running.")
-
-    # ── Phase 1: run the full CrewAI Red vs Blue cycle ────────────────────
-    try:
-        result: dict[str, Any] = await run_simulation_cycle()
-    except Exception as exc:            # noqa: BLE001
-        await _update_state(
-            status="error",
-            latest_event="Simulation crashed during CrewAI execution.",
-            action_taken="None",
-            error=str(exc),
-        )
-        logger.error("run_simulation_cycle raised an exception: %s", exc, exc_info=True)
-        return
-
-    # ── Phase 2: parse result and push live telemetry to SIMULATION_STATE ─
-    if result.get("status") == "error":
-        await _update_state(
-            status="error",
-            latest_event="Agent execution failed — see error field.",
-            action_taken="None",
-            error=result.get("error", "Unknown error"),
-        )
-        logger.error("Simulation cycle returned error: %s", result.get("error"))
-        return
-
-    # --- Extract actionable fields from agent reports --------------------
-    blue_report: str = result.get("blue_report", "") or ""
-    red_report:  str = result.get("red_report",  "") or ""
-
-    # Detect containment action from Blue Agent's report text
-    containment_action = "Containment decision logged — see blue_report"
-    for keyword in ("ISOLATED", "SEVERED", "BLOCKED", "REVOKED", "HONEYPOT"):
-        if keyword in blue_report.upper():
-            containment_action = f"Blue Agent executed: {keyword}"
-            break
-
-    # Detect compromised / target node mentioned in Red Agent's report
-    compromised_node = "proxy_ingress"           # default from alert context
-    for candidate in ("web_server_01", "dc01", "DC01", "10.0.1.3"):
-        if candidate in red_report or candidate in blue_report:
-            compromised_node = candidate
-            break
-
-    # Try to parse anomaly score from blue report (e.g. "score=0.8412")
-    anomaly_score: float | None = None
-    import re
-    _score_match = re.search(r"anomaly[_\s]score[\":\s=]+([0-9]\.[0-9]+)", blue_report, re.IGNORECASE)
-    if _score_match:
-        try:
-            anomaly_score = float(_score_match.group(1))
-        except ValueError:
-            pass
-
-    # Latest event headline — first non-empty line of blue report
-    latest_event_lines = [ln.strip() for ln in blue_report.splitlines() if ln.strip()]
-    latest_event = (
-        latest_event_lines[0][:200] if latest_event_lines
-        else "Blue Agent containment cycle completed."
-    )
-
-    async with _STATE_LOCK:
-        SIMULATION_STATE.update({
-            "status"          : "completed",
-            "latest_event"    : latest_event,
-            "action_taken"    : containment_action,
-            "compromised_node": compromised_node,
-            "mitre_tactic"    : "Lateral Movement — T1550.002 (Pass the Hash)",
-            "anomaly_score"   : anomaly_score,
-            "red_report"      : red_report,
-            "blue_report"     : blue_report,
-            "cycles_run"      : SIMULATION_STATE["cycles_run"] + 1,
-            "last_updated"    : _utc_now(),
-            "error"           : None,
-        })
-
-    logger.info(
-        "Simulation cycle #%d completed. Action: %s | Node: %s",
-        SIMULATION_STATE["cycles_run"],
-        containment_action,
-        compromised_node,
-    )
+    logger.info("Proposal ready: sever %s -> %s (awaiting approval)", action["source"], action["target"])
 
 
 # ──────────────────────────────────────────────────────────────
-# STEP 4 — STARTUP DIAGNOSTICS (lifespan hook)
+# LIFESPAN
 # ──────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Print production-grade diagnostics on startup and clean up on shutdown."""
     divider = "=" * 60
-    print(f"\n{divider}")
-    print("  Project Chronos — API Server Starting")
-    print(divider)
-    print(f"  Version        : {app.version}")
-    print(f"  Python         : {sys.version.split()[0]}")
-    print(f"  Startup time   : {_utc_now()}")
-
-    # Orchestrator import status
+    print(f"\n{divider}\n  Project Chronos — API Server Starting (v{APP_VERSION})\n{divider}")
+    print(f"  Python       : {sys.version.split()[0]}")
     if _ORCHESTRATOR_LOADED:
-        print("  Orchestrator   : ✔  orchestrator.py loaded successfully")
-        print("  Tools loaded   :")
-        print("    • graph_scan_neighbors  → Red Agent  (ai_glasses.get_neighbors)")
-        print("    • graph_cut_connection  → Blue Agent (ai_glasses.cut_connection)")
-        print("    • ml_score_anomaly      → Blue Agent (detect.py / Isolation Forest)")
-        print("    • audit_log_action      → Blue Agent (defense_logger.DefenseLogger)")
+        mode = "LLM (CrewAI + Groq)" if orch.llm_mode_available() else "deterministic tool pipeline"
+        print(f"  Orchestrator : loaded — {mode}")
     else:
-        print(f"  Orchestrator   : ✖  FAILED — {_ORCHESTRATOR_LOAD_ERROR}")
-
-    # Dependency loop check
-    _deps = ["fastapi", "crewai", "langchain_openai", "neo4j", "sklearn", "pandas"]
-    for _dep in _deps:
-        try:
-            __import__(_dep)
-            print(f"  Dep [{_dep:20s}]: ✔")
-        except ImportError:
-            print(f"  Dep [{_dep:20s}]: ✖  NOT FOUND")
-
-    print(f"\n  Routes ready:")
-    print("    GET  /                  → Health check")
-    print("    POST /start_simulation  → Launch CrewAI background cycle")
-    print("    GET  /simulation_status → Live state polling endpoint")
+        print(f"  Orchestrator : FAILED — {_ORCHESTRATOR_LOAD_ERROR}")
+    print(f"  Database     : {'in-memory fallback' if using_fallback() else 'MongoDB'}")
+    print(f"  Neo4j        : {neo4j_status()}")
     print(f"{divider}\n")
-    logger.info("Chronos API startup diagnostics complete.")
-
-    yield  # server runs here
-
-    print(f"\n{divider}")
-    print("  Project Chronos — API Server Shutting Down")
-    print(f"  Uptime: {time.time() - _SERVER_START_TIME:.1f}s  |  Cycles run: {SIMULATION_STATE['cycles_run']}")
-    print(f"{divider}\n")
-    logger.info("Chronos API shutdown complete.")
+    yield
+    print(f"\n  Project Chronos — shutting down (uptime {time.time() - _SERVER_START_TIME:.1f}s)\n")
 
 
 # ──────────────────────────────────────────────────────────────
-# APP INITIALISATION
+# APP
 # ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Chronos Orchestrator API",
-    description=(
-        "Live backend API for Project Chronos — AI-driven Red vs Blue cyber-simulation. "
-        "CrewAI agents (GPT-4o-mini) execute tool-augmented attack and defense cycles "
-        "against a Neo4j network graph. Poll /simulation_status for live telemetry."
-    ),
-    version="3.0.0",
+    description=("Live backend for Project Chronos — AI Red vs Blue simulation with human-in-the-loop "
+                 "containment approval, RAG-grounded proposals and a SOC Copilot."),
+    version=APP_VERSION,
     contact={"name": "Chronos Dev Team"},
     license_info={"name": "MIT"},
     lifespan=lifespan,
 )
 
-# ──────────────────────────────────────────────────────────────
-# CORS MIDDLEWARE
-# ──────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # Restrict to frontend origin in production
+    allow_origins=["*"],  # Restrict to the frontend origin in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ──────────────────────────────────────────────────────────────
-# ROUTES
-# ──────────────────────────────────────────────────────────────
+app.include_router(topology_routes.router)
+app.include_router(copilot_routes.router)
 
-@app.get(
-    "/",
-    summary="Health Check",
-    tags=["System"],
-    response_description="Server liveness + uptime metadata.",
-)
+
+@app.get("/", summary="Health Check", tags=["System"])
 async def root() -> dict:
-    """Root health-check endpoint. Safe to call at any frequency."""
+    session = await run_in_threadpool(get_current_session)
+    fallback = await run_in_threadpool(using_fallback)
     return {
-        "status"              : "Chronos Orchestrator Active",
-        "version"             : app.version,
-        "uptime_seconds"      : round(time.time() - _SERVER_START_TIME, 1),
-        "simulation_status"   : SIMULATION_STATE["status"],
-        "cycles_completed"    : SIMULATION_STATE["cycles_run"],
-        "orchestrator_loaded" : _ORCHESTRATOR_LOADED,
-        "timestamp"           : _utc_now(),
+        "status": "Chronos Orchestrator Active",
+        "version": APP_VERSION,
+        "uptime_seconds": round(time.time() - _SERVER_START_TIME, 1),
+        "orchestrator": {
+            "loaded": _ORCHESTRATOR_LOADED,
+            "mode": ("llm" if (_ORCHESTRATOR_LOADED and orch.llm_mode_available()) else "deterministic"),
+            "crewai_available": bool(_ORCHESTRATOR_LOADED and orch.CREWAI_AVAILABLE),
+            "error": _ORCHESTRATOR_LOAD_ERROR or None,
+        },
+        "orchestrator_loaded": _ORCHESTRATOR_LOADED,
+        "database": {"type": "in-memory" if fallback else "mongodb",
+                     "status": "fallback" if fallback else "connected"},
+        "neo4j": neo4j_status(),
+        "simulation_status": session.get("status"),
+        "cycles_completed": session.get("cycles_run", 0),
+        "timestamp": _utc_now(),
     }
 
 
-@app.post(
-    "/start_simulation",
-    status_code=202,
-    summary="Start Simulation",
-    tags=["Simulation"],
-    response_description="Accepted — CrewAI cycle dispatched to background worker.",
-)
+@app.post("/start_simulation", status_code=202, summary="Start Simulation", tags=["Simulation"])
 async def start_simulation(background_tasks: BackgroundTasks) -> dict:
-    """
-    Triggers a new Chronos Red vs Blue CrewAI simulation cycle.
-
-    Returns HTTP 202 Accepted immediately so the frontend never blocks.
-    The background worker updates SIMULATION_STATE in real time — poll
-    GET /simulation_status every second to stream live agent telemetry.
-
-    Returns 409 if a simulation is already running to prevent overlapping cycles.
-    """
-    async with _STATE_LOCK:
-        current_status = SIMULATION_STATE["status"]
-
-    if current_status == "running":
+    """Atomically claims the session. 409 if a cycle is running or awaiting approval."""
+    session = await run_in_threadpool(try_start_session)
+    if session is None:
         raise HTTPException(
             status_code=409,
-            detail="A simulation cycle is already running. "
-                   "Poll /simulation_status and wait for status='completed'.",
+            detail="A simulation is already running or awaiting analyst approval. "
+                   "Resolve it via /approve_action or /reject_action (or /reset_simulation).",
         )
-
-    # Immediately flip state to 'running' so the frontend knows straight away
-    await _update_state(
-        status="running",
-        latest_event="Red Agent active — Mapping attack corridor via graph_scan_neighbors",
-        action_taken="Pending",
-        compromised_node="proxy_ingress",
-        error=None,
-    )
-
-    # Dispatch the heavy async worker to run in the background
     background_tasks.add_task(_simulation_worker)
-    logger.info("Simulation background worker dispatched.")
-
     return {
-        "status"    : "Simulation initiated in background",
-        "message"   : "Poll GET /simulation_status for live agent telemetry.",
-        "timestamp" : _utc_now(),
+        "status": "running",
+        "session_id": session["session_id"],
+        "message": "Poll GET /simulation_status for live telemetry.",
+        "timestamp": _utc_now(),
     }
 
 
-@app.get(
-    "/simulation_status",
-    summary="Get Live Simulation Status",
-    tags=["Simulation"],
-    response_description="Current snapshot of SIMULATION_STATE — safe to poll every second.",
-)
+@app.get("/simulation_status", summary="Get Live Simulation Status", tags=["Simulation"])
 async def simulation_status() -> dict:
-    """
-    Returns the live snapshot of SIMULATION_STATE.
-
-    Designed for 1-second polling from Zasefa's React frontend.
-    The state transitions are:
-      idle → running → completed | error
-
-    Fields:
-      status           : 'idle' | 'running' | 'completed' | 'error'
-      latest_event     : Human-readable latest agent action (updates mid-cycle)
-      action_taken     : SOAR containment decision (populated on completion)
-      compromised_node : Target node identified by Red Agent
-      mitre_tactic     : ATT&CK classification
-      anomaly_score    : ML Engine float score (0.0–1.0, higher = more anomalous)
-      red_report       : Full Red Agent Threat Actor Report text
-      blue_report      : Full Blue Agent Incident Response Record text
-      cycles_run       : Total completed simulation cycles this session
-      last_updated     : ISO-8601 UTC timestamp of last state mutation
-      error            : Error message if status='error', else null
-    """
-    async with _STATE_LOCK:
-        # Return a shallow copy so the lock is released immediately
-        snapshot = dict(SIMULATION_STATE)
-    return snapshot
+    return await run_in_threadpool(get_current_session)
 
 
-@app.post(
-    "/reset_simulation",
-    summary="Reset Simulation State",
-    tags=["Simulation"],
-    response_description="Resets state to idle so a new cycle can be started.",
-)
-async def reset_simulation() -> dict:
-    """
-    Resets SIMULATION_STATE to idle.
+async def _require_pending() -> tuple[dict, dict]:
+    session = await run_in_threadpool(get_current_session)
+    action = session.get("pending_action")
+    if session.get("status") != "awaiting_approval" or not action:
+        raise HTTPException(status_code=409, detail="No pending action is awaiting approval.")
+    return session, action
 
-    Use this between test cycles when you want to re-trigger
-    /start_simulation without waiting for the server to restart.
-    Cannot reset while a cycle is actively running.
-    """
-    async with _STATE_LOCK:
-        if SIMULATION_STATE["status"] == "running":
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot reset while a simulation is running.",
+
+@app.post("/approve_action", summary="Approve pending containment", tags=["Simulation"])
+async def approve_action() -> dict:
+    async with _HITL_LOCK:
+        _session, action = await _require_pending()
+        try:
+            await run_in_threadpool(orch.perform_graph_cut, action["source"], action["target"])
+            await run_in_threadpool(
+                lambda: orch.write_audit_entry(
+                    node_name=action["target"],
+                    action="CONNECTION_SEVERED",
+                    anomaly_score=action["anomaly_score"],
+                    reason=action["justification"],
+                    mitre_tactic=action.get("mitre_tactic"),
+                    approved_by="human-analyst",
+                )
             )
-        cycles = SIMULATION_STATE["cycles_run"]   # preserve cycle counter
-        SIMULATION_STATE.clear()
-        SIMULATION_STATE.update({
-            "status"          : "idle",
-            "latest_event"    : "State reset — system baseline normal.",
-            "action_taken"    : "None",
-            "compromised_node": None,
-            "mitre_tactic"    : None,
-            "anomaly_score"   : None,
-            "red_report"      : None,
-            "blue_report"     : None,
-            "cycles_run"      : cycles,
-            "last_updated"    : _utc_now(),
-            "error"           : None,
-        })
+        except Exception as exc:  # noqa: BLE001
+            logger.error("approve_action failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Could not execute containment: {exc}")
 
-    logger.info("Simulation state reset to idle.")
-    return {"status": "idle", "message": "Simulation state reset successfully."}
+        taken = f"Severed {action['source']} -> {action['target']} (Approved by human-analyst)"
+        await run_in_threadpool(
+            lambda: update_current_session(status="completed", pending_action=None, action_taken=taken,
+                                           latest_event=taken, error=None)
+        )
+    logger.info(taken)
+    return {"status": "completed", "action_taken": taken}
+
+
+@app.post("/reject_action", summary="Reject pending containment", tags=["Simulation"])
+async def reject_action() -> dict:
+    async with _HITL_LOCK:
+        _session, action = await _require_pending()
+        try:
+            await run_in_threadpool(
+                lambda: orch.write_audit_entry(
+                    node_name=action["target"],
+                    action="PROPOSAL_REJECTED",
+                    anomaly_score=action["anomaly_score"],
+                    reason="Rejected by human analyst",
+                    mitre_tactic=action.get("mitre_tactic"),
+                    approved_by="human-analyst",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("reject_action audit failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Could not write audit entry: {exc}")
+
+        taken = "No action taken (proposal rejected by analyst)."
+        await run_in_threadpool(
+            lambda: update_current_session(status="completed", pending_action=None, action_taken=taken,
+                                           latest_event=taken, error=None)
+        )
+    return {"status": "completed", "action_taken": taken}
+
+
+@app.post("/reset_simulation", summary="Reset Simulation State", tags=["Simulation"])
+async def reset_simulation() -> dict:
+    session = await run_in_threadpool(get_current_session)
+    if session.get("status") == "running":
+        raise HTTPException(status_code=409, detail="Cannot reset while a simulation is running.")
+    fresh = await run_in_threadpool(reset_session)
+    return {"status": "idle", "message": "Simulation state reset successfully.",
+            "session_id": fresh["session_id"]}
+
+
+_AUDIT_LINE = re.compile(
+    r"^\[(?P<timestamp>[^\]]+)\] ACTION TAKEN: (?P<action>\S+) (?P<node>\S+?)\. "
+    r"REASON: Anomaly score (?P<score>[0-9.]+)"
+    r"(?:.*?APPROVED BY: (?P<approved_by>[^.]+)\.)?"
+)
+
+
+@app.get("/audit_logs", summary="Recent audit log entries", tags=["System"])
+async def audit_logs(limit: int = Query(50, ge=1, le=500)) -> dict:
+    path = orch.get_audit_log_path() if _ORCHESTRATOR_LOADED else Path(__file__).parent / "audit.log"
+
+    def _read() -> list[dict]:
+        if not path.exists():
+            return []
+        lines = [ln.strip() for ln in path.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+        entries = []
+        for ln in lines[-limit:]:
+            m = _AUDIT_LINE.match(ln)
+            g = m.groupdict() if m else {}
+            entries.append({
+                "timestamp": g.get("timestamp"),
+                "action": g.get("action"),
+                "node": g.get("node"),
+                "anomaly_score": float(g["score"]) if g.get("score") else None,
+                "approved_by": g.get("approved_by"),
+                "raw": ln,
+            })
+        return list(reversed(entries))  # newest first
+
+    entries = await run_in_threadpool(_read)
+    return {"count": len(entries), "entries": entries}
