@@ -604,6 +604,14 @@ def summarize_offline(
     session_context: Optional[dict] = None,
 ) -> str:
     """Dynamic, context-aware plain-language answer grounded in the active topology and simulation state."""
+    is_standby_mode = (session_context or {}).get("topology_mode") == "standby"
+    if is_standby_mode or (isinstance(topology, dict) and len(topology.get("devices", [])) == 0):
+        return (
+            "SOC Copilot is currently on Standby because no network topology blueprint is loaded yet. "
+            "Please select either 'Load 20-Node Enterprise Demo' or upload a Custom Topology (.json) file "
+            "first to initialize the Digital Twin and unlock graph analysis."
+        )
+
     if topology is None:
         try:
             from backend.db import topology_store
@@ -614,8 +622,33 @@ def summarize_offline(
 
     devices: list[dict] = topology.get("devices", [])
     conns: list[dict] = topology.get("connections", [])
+    if not devices:
+        return (
+            "SOC Copilot is currently on Standby because no network topology blueprint is loaded yet. "
+            "Please select either 'Load 20-Node Enterprise Demo' or upload a Custom Topology (.json) file "
+            "first to initialize the Digital Twin and unlock graph analysis."
+        )
+
     by_id: dict[str, dict] = {d["id"]: d for d in devices}
-    session = _load_active_session(session_context)
+    raw_session = _load_active_session(session_context)
+    # Filter session references against active topology `by_id` to prevent cross-topology bleed-over
+    raw_pa = raw_session.get("pending_action")
+    valid_pa = (
+        raw_pa
+        if (
+            isinstance(raw_pa, dict)
+            and raw_pa.get("source") in by_id
+            and raw_pa.get("target") in by_id
+        )
+        else None
+    )
+    raw_comp = raw_session.get("compromised_node")
+    valid_comp = raw_comp if (raw_comp and raw_comp in by_id) else None
+    session = {
+        **raw_session,
+        "pending_action": valid_pa,
+        "compromised_node": valid_comp,
+    }
 
     intent = (plan or {}).get("intent", "")
     ql = (question or "").lower()

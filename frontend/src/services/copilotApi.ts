@@ -1,4 +1,6 @@
-import { fetchTopology, useMockData } from "./api";
+import { useMockData } from "./api";
+import { getMockCustomTopology } from "./mockSimulation";
+import type { TopologyEntryMode } from "../components/TopologyUploader";
 import type {
   NetworkTopologyFile,
   SimulationData,
@@ -319,10 +321,65 @@ function formatDeviceBrief(
   return `${d.name} (${d.id}) — IP ${d.ip}, OS: ${d.os}, subnet: ${d.subnet}, open ports: [${ports}], CVEs: [${cves}], incoming from: [${inStr}], outgoing to: [${outStr}]`;
 }
 
+export function buildActiveTopologyFromSimulation(
+  simData?: SimulationData,
+  topologyMode?: TopologyEntryMode
+): NetworkTopologyFile {
+  const effectiveMode: TopologyEntryMode =
+    topologyMode ??
+    (!simData ||
+    simData.simulationId === "SIM-STANDBY" ||
+    simData.nodes.length === 0
+      ? "standby"
+      : "demo");
+
+  if (
+    effectiveMode === "standby" ||
+    !simData ||
+    simData.simulationId === "SIM-STANDBY" ||
+    simData.nodes.length === 0
+  ) {
+    return { devices: [], connections: [] };
+  }
+
+  // If custom mode is active and a custom topology file was uploaded, prefer the live nodes/edges
+  // from simData (which also reflect any severed edges) or the custom uploaded file — NEVER mockData.ts!
+  if (simData.nodes.length > 0) {
+    return {
+      devices: simData.nodes.map((n, idx) => ({
+        id: n.id,
+        name: n.label || n.id,
+        ip: n.ipAddress || "0.0.0.0",
+        subnet:
+          n.subnet ??
+          (idx < Math.max(1, Math.floor(simData.nodes.length / 3))
+            ? "public_dmz"
+            : "internal_core"),
+        ports: n.openPorts ?? [],
+        os: n.operatingSystem || "Linux",
+        cves: n.knownCves ?? [],
+      })),
+      connections: simData.edges.map((e) => ({
+        source: e.source,
+        target: e.target,
+        type: e.type || "NETWORK_LINK",
+      })),
+    };
+  }
+
+  if (effectiveMode === "custom") {
+    const custom = getMockCustomTopology();
+    return custom ?? { devices: [], connections: [] };
+  }
+
+  return { devices: [], connections: [] };
+}
+
 export function runDynamicClientCopilot(
   question: string,
   topo: NetworkTopologyFile,
-  simData?: SimulationData
+  simData?: SimulationData,
+  topologyMode?: TopologyEntryMode
 ): CopilotAnswer {
   const q = question.trim();
   if (!q) {
@@ -336,9 +393,28 @@ export function runDynamicClientCopilot(
     );
   }
 
-  const ql = q.toLowerCase();
   const devices = topo.devices ?? [];
   const connections = topo.connections ?? [];
+
+  if (
+    topologyMode === "standby" ||
+    simData?.simulationId === "SIM-STANDBY" ||
+    devices.length === 0
+  ) {
+    return {
+      cypher_query:
+        "MATCH (d:Device) RETURN count(d) AS loaded_devices\nLIMIT 50",
+      raw_result: [],
+      conversational: true,
+      mode: "offline",
+      answer:
+        "SOC Copilot is currently on Standby because no network topology blueprint is loaded yet. " +
+        "Please select either '🚀 Load 20-Node Enterprise Demo' or '📂 Upload Custom Topology (.json)' " +
+        "first to initialize the Digital Twin and unlock graph analysis.",
+    };
+  }
+
+  const ql = q.toLowerCase();
   const mentioned = findAllMentionedDevices(q, devices);
 
   // 1. Multi-device / compound question (e.g., "Tell me about my_laptop and which devices can reach target_device")
@@ -996,7 +1072,9 @@ async function callGeminiDirectFromBrowser(
 export async function askCopilot(
   question: string,
   simData?: SimulationData,
-  history?: ChatHistoryTurn[]
+  history?: ChatHistoryTurn[],
+  topologyMode?: TopologyEntryMode,
+  topologySourceName?: string
 ): Promise<CopilotAnswer> {
   const q = question.trim();
   if (!q) {
@@ -1011,15 +1089,37 @@ export async function askCopilot(
     );
   }
 
-  const topo = await fetchTopology();
-  const localBaseline = runDynamicClientCopilot(q, topo, simData);
+  const effectiveMode: TopologyEntryMode =
+    topologyMode ??
+    (!simData ||
+    simData.simulationId === "SIM-STANDBY" ||
+    simData.nodes.length === 0
+      ? "standby"
+      : "demo");
+
+  const activeTopology = buildActiveTopologyFromSimulation(
+    simData,
+    effectiveMode
+  );
+  const localBaseline = runDynamicClientCopilot(
+    q,
+    activeTopology,
+    simData,
+    effectiveMode
+  );
+
+  // If in standby or no devices are loaded, return the standby notice immediately — NEVER query or fall back to sample data
+  if (effectiveMode === "standby" || activeTopology.devices.length === 0) {
+    return localBaseline;
+  }
+
   const geminiKey = getStoredGeminiKey();
 
   // 2. If a Gemini API key is configured in the browser, try direct Gemini 2.5 Flash first for instant conversational response
   if (geminiKey) {
     const geminiText = await callGeminiDirectFromBrowser(
       q,
-      topo,
+      activeTopology,
       simData,
       localBaseline,
       history,
@@ -1037,16 +1137,20 @@ export async function askCopilot(
   // 3. Query the backend /copilot/ask when not in mock mode
   if (!useMockData) {
     try {
-      const sessionContext = simData
-        ? {
-            status: simData.status,
-            compromised_node: simData.compromised_node,
-            mitre_tactic: simData.mitre_tactic,
-            anomaly_score: simData.anomaly_score,
-            pending_action: simData.pending_action,
-            latest_event: simData.latest_event,
-          }
-        : undefined;
+      const sessionContext = {
+        status: simData?.status ?? "idle",
+        compromised_node: simData?.compromised_node ?? null,
+        mitre_tactic: simData?.mitre_tactic ?? null,
+        anomaly_score: simData?.anomaly_score ?? null,
+        pending_action: simData?.pending_action ?? null,
+        latest_event: simData?.latest_event ?? null,
+        topology_mode: effectiveMode,
+        topology_source_name:
+          topologySourceName ??
+          (effectiveMode === "demo"
+            ? "20-Node Enterprise Reference"
+            : "Custom Topology"),
+      };
 
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -1060,7 +1164,7 @@ export async function askCopilot(
         headers,
         body: JSON.stringify({
           question: q,
-          topology: topo,
+          topology: activeTopology,
           session_context: sessionContext,
           history: history?.slice(-6),
         }),

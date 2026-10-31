@@ -223,6 +223,7 @@ export function TopologyUploader({
 
   return (
     <section
+      id="topology-uploader-section"
       className="panel uploader-panel"
       aria-label="Dual-mode topology selector and uploader"
       style={{

@@ -18,6 +18,7 @@ import {
   buildRemediationItemsFromTopology,
   computeTopologyBaselineRisk,
   mockApproveAction,
+  mockClearCustomTopology,
   mockFetchTopology,
   mockGetSimulation,
   mockLoadDemoTopology,
@@ -191,8 +192,20 @@ function applyEdgeOverrides(
  * Builds a merged AuditLog list: the mock baseline plus live backend events.
  * Ensures the log feed is never empty on first render.
  */
-function buildLogs(backend: BackendSimulationState): AuditLog[] {
-  const logs: AuditLog[] = [...initialMockData.logs];
+function buildLogs(
+  backend: BackendSimulationState,
+  topo?: NetworkTopologyFile | null
+): AuditLog[] {
+  const assetCount = topo?.devices?.length ?? initialMockData.nodes.length;
+  const connCount = topo?.connections?.length ?? initialMockData.edges.length;
+  const logs: AuditLog[] = [
+    {
+      id: "log-1",
+      timestamp: new Date().toLocaleTimeString(),
+      message: `Project Chronos Cyber Digital Twin initialized — ${assetCount} network asset(s) and ${connCount} connection(s) online across Public DMZ & Internal Core.`,
+      type: "system",
+    },
+  ];
   const eventTimestamp = backend.last_updated
     ? new Date(backend.last_updated).toLocaleTimeString()
     : initialMockData.logs[0]?.timestamp || "00:00:00";
@@ -267,16 +280,28 @@ export function adaptBackendResponse(
     ? topologyFileToNodesAndEdges(topo)
     : { nodes: initialMockData.nodes, edges: initialMockData.edges };
 
+  const validIds = new Set(baseGraph.nodes.map((n) => n.id));
+  const validCompromised =
+    backend.compromised_node && validIds.has(backend.compromised_node)
+      ? backend.compromised_node
+      : null;
+  const validPendingAction =
+    backend.pending_action &&
+    validIds.has(backend.pending_action.source) &&
+    validIds.has(backend.pending_action.target)
+      ? backend.pending_action
+      : null;
+
   const nodes = applyNodeOverrides(
     baseGraph.nodes,
-    backend.compromised_node,
-    backend.pending_action,
+    validCompromised,
+    validPendingAction,
     backend.status,
     backend.action_taken
   );
   const edges = applyEdgeOverrides(
     baseGraph.edges,
-    backend.pending_action,
+    validPendingAction,
     backend.status
   );
 
@@ -304,12 +329,12 @@ export function adaptBackendResponse(
     currentStep: deriveStep(backend),
     nodes,
     edges,
-    logs: buildLogs(backend),
+    logs: buildLogs(backend, topo),
     remediations: dynamicRemediations,
-    pending_action: backend.pending_action ?? null,
+    pending_action: validPendingAction,
     red_report: backend.red_report,
     blue_report: backend.blue_report,
-    compromised_node: backend.compromised_node,
+    compromised_node: validCompromised,
     mitre_tactic: backend.mitre_tactic,
     anomaly_score: backend.anomaly_score,
     latest_event: backend.latest_event,
@@ -320,6 +345,11 @@ export function adaptBackendResponse(
 // ---------------------------------------------------------------------------
 // Exported API functions
 // ---------------------------------------------------------------------------
+
+export const clearCachedTopology = (): void => {
+  cachedLiveTopology = null;
+  mockClearCustomTopology();
+};
 
 export const fetchTopology = async (): Promise<NetworkTopologyFile> => {
   if (useMockData) {
@@ -334,8 +364,11 @@ export const loadDemoTopology = async (): Promise<{
   deviceCount: number;
   connectionCount: number;
 }> => {
+  const localDemo = await mockLoadDemoTopology();
+  const demoTopo = await mockFetchTopology();
+  cachedLiveTopology = demoTopo;
   if (useMockData) {
-    return mockLoadDemoTopology();
+    return localDemo;
   }
   try {
     const response = await api.post<{
@@ -345,28 +378,37 @@ export const loadDemoTopology = async (): Promise<{
     await fetchTopology();
     return response.data;
   } catch {
-    return mockLoadDemoTopology();
+    return localDemo;
   }
 };
 
 export const uploadTopology = async (
   file: File
 ): Promise<{ deviceCount: number; connectionCount: number }> => {
+  // Always parse, validate, and store the user's custom topology locally first
+  // so that `cachedLiveTopology` and `mockSimulation` reflect the exact uploaded file.
+  const localCounts = await mockUploadTopology(file);
+  const localTopo = await mockFetchTopology();
+  cachedLiveTopology = localTopo;
+
   if (useMockData) {
-    return mockUploadTopology(file);
+    return localCounts;
   }
-  const formData = new FormData();
-  formData.append("topology_file", file);
-  const response = await api.post<{
-    deviceCount: number;
-    connectionCount: number;
-  }>("/upload_topology", formData);
   try {
-    await fetchTopology();
-  } catch {
-    // non-fatal if immediate topology refresh fails
+    const formData = new FormData();
+    formData.append("topology_file", file);
+    const response = await api.post<{
+      deviceCount: number;
+      connectionCount: number;
+    }>("/upload_topology", formData);
+    cachedLiveTopology = localTopo;
+    return response.data;
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      throw err;
+    }
+    return localCounts;
   }
-  return response.data;
 };
 
 export const approveAction = async (): Promise<{

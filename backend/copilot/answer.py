@@ -156,11 +156,18 @@ def answer_question(
     Every Cypher string passes `validate_cypher` first; ValueError (-> HTTP 422) is raised ONLY
     for destructive/write commands or pure non-language gibberish.
     """
-    topology = (
-        topology_override
-        if (isinstance(topology_override, dict) and isinstance(topology_override.get("devices"), list))
-        else topology_store.get_topology()
+    is_standby = (session_context or {}).get("topology_mode") == "standby" or (
+        isinstance(topology_override, dict)
+        and isinstance(topology_override.get("devices"), list)
+        and len(topology_override.get("devices", [])) == 0
     )
+
+    if is_standby:
+        topology = {"devices": [], "connections": []}
+    elif isinstance(topology_override, dict) and isinstance(topology_override.get("devices"), list):
+        topology = topology_override
+    else:
+        topology = topology_store.get_topology()
 
     # 1. Deterministic plan & read-only guardrail check
     plan = rule_based_plan(
@@ -170,6 +177,20 @@ def answer_question(
         session_context=session_context,
     )
     validated_plan_cypher = validate_cypher(plan["cypher"])  # raises ValueError on write intents!
+
+    if is_standby:
+        return {
+            "cypher_query": "MATCH (d:Device) RETURN count(d) AS loaded_devices\nLIMIT 50",
+            "raw_result": [],
+            "answer": (
+                "SOC Copilot is currently on Standby because no network topology blueprint is loaded yet. "
+                "Please select either 'Load 20-Node Enterprise Demo' or upload a Custom Topology (.json) file "
+                "first to initialize the Digital Twin and unlock graph analysis."
+            ),
+            "mode": "offline",
+            "data_source": "mirror",
+            "conversational": True,
+        }
 
     conversational_intents = {
         "greeting",

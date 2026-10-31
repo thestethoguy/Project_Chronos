@@ -443,4 +443,82 @@ def test_load_demo_topology_restores_enterprise_template_after_custom_upload(cli
     assert len(topo["devices"]) == 20
 
 
+def test_copilot_standby_mode_and_custom_topology_zero_sample_bleedover(client):
+    # 1. Standby Mode: empty topology + topology_mode="standby" -> must NOT bleed 20-node sample data
+    r_standby = client.post(
+        "/copilot/ask",
+        json={
+            "question": "Tell me about the network and which devices are loaded",
+            "topology": {"devices": [], "connections": []},
+            "session_context": {"topology_mode": "standby"},
+        },
+    )
+    assert r_standby.status_code == 200, r_standby.text
+    standby_body = r_standby.json()
+    standby_ans = standby_body["answer"]
+    assert standby_body["raw_result"] == []
+    assert "Standby" in standby_ans or "standby" in standby_ans
+    assert "Demo" in standby_ans or "Custom" in standby_ans
+    assert "proxy_ingress" not in standby_ans
+    assert "db_secret_01" not in standby_ans
+
+    # 2. Custom 3-node topology payload -> answers strictly about router_01, laptop_alpha, nas_vault
+    custom_3node = {
+        "devices": [
+            {
+                "id": "router_01",
+                "name": "Perimeter Branch Router",
+                "ip": "172.16.0.1",
+                "subnet": "public_dmz",
+                "ports": [80, 443],
+                "os": "OpenWrt",
+                "cves": ["CVE-2023-20073"],
+            },
+            {
+                "id": "laptop_alpha",
+                "name": "Engineering Laptop Alpha",
+                "ip": "172.16.0.25",
+                "subnet": "public_dmz",
+                "ports": [22, 445],
+                "os": "Ubuntu 24.04",
+                "cves": [],
+            },
+            {
+                "id": "nas_vault",
+                "name": "Encrypted NAS Vault",
+                "ip": "172.16.10.99",
+                "subnet": "internal_core",
+                "ports": [445, 5432],
+                "os": "Debian 12",
+                "cves": ["CVE-2024-10979"],
+            },
+        ],
+        "connections": [
+            {"source": "router_01", "target": "laptop_alpha", "type": "LAN_LINK"},
+            {"source": "laptop_alpha", "target": "nas_vault", "type": "SMB_SHARE"},
+        ],
+    }
+
+    r_custom = client.post(
+        "/copilot/ask",
+        json={
+            "question": "Tell me about the network and which devices can reach nas_vault",
+            "topology": custom_3node,
+            "session_context": {
+                "topology_mode": "custom",
+                "topology_source_name": "branch_3node.json",
+                "status": "idle",
+            },
+        },
+    )
+    assert r_custom.status_code == 200, r_custom.text
+    custom_ans = r_custom.json()["answer"]
+    assert "router_01" in custom_ans or "nas_vault" in custom_ans
+    assert "proxy_ingress" not in custom_ans
+    assert "db_secret_01" not in custom_ans
+    assert "web_server_01" not in custom_ans
+    assert "auth_controller" not in custom_ans
+
+
+
 

@@ -520,6 +520,15 @@ export const mockUploadTopology = async (
   };
 };
 
+export const mockClearCustomTopology = (): void => {
+  customTopology = null;
+  step = 0;
+};
+
+export const getMockCustomTopology = (): NetworkTopologyFile | null => {
+  return customTopology ? structuredClone(customTopology) : null;
+};
+
 export const mockFetchTopology = async (): Promise<NetworkTopologyFile> => {
   await wait(100);
   if (customTopology) {

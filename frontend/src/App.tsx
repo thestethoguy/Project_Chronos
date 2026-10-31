@@ -32,6 +32,7 @@ import { SimulationTimeline } from "./components/SimulationTimeline";
 import { PlaybookModal } from "./components/PlaybookModal";
 
 import {
+  clearCachedTopology,
   getSimulationStatus,
   loadDemoTopology,
   pauseSimulation,
@@ -55,6 +56,10 @@ function App() {
   const [activeTopologyLabel, setActiveTopologyLabel] = useState<string>(
     "Standby — No Blueprint Loaded"
   );
+  const [topologySourceName, setTopologySourceName] = useState<string>(
+    "Standby — No Blueprint Loaded"
+  );
+  const [topologyRefreshKey, setTopologyRefreshKey] = useState<number>(0);
 
   const [data, setData] = useState<SimulationData>(() =>
     buildStandbySimulationData()
@@ -146,9 +151,11 @@ function App() {
     try {
       const counts = await loadDemoTopology();
       setTopologyMode("demo");
+      setTopologySourceName("20-Node Enterprise Reference");
       setActiveTopologyLabel(
         `20-Node Enterprise Core (${counts.deviceCount} devices, ${counts.connectionCount} links)`
       );
+      setTopologyRefreshKey((k) => k + 1);
       setRefreshSignal((n) => n + 1);
       await refreshSimulation();
       setError(undefined);
@@ -166,11 +173,13 @@ function App() {
       counts: { deviceCount: number; connectionCount: number }
     ): Promise<void> => {
       setTopologyMode("custom");
+      setTopologySourceName(filename);
       setActiveTopologyLabel(
         `${filename} (${counts.deviceCount} devices, ${counts.connectionCount} links)`
       );
       setSelectedNodeId(undefined);
       setPlaybookImpact(undefined);
+      setTopologyRefreshKey((k) => k + 1);
       setRefreshSignal((n) => n + 1);
       await refreshSimulation();
     },
@@ -178,11 +187,14 @@ function App() {
   );
 
   const handleUnloadTopology = useCallback((): void => {
+    clearCachedTopology();
     setTopologyMode("standby");
+    setTopologySourceName("Standby — No Blueprint Loaded");
     setActiveTopologyLabel("Standby — No Blueprint Loaded");
     setData(buildStandbySimulationData());
     setSelectedNodeId(undefined);
     setPlaybookImpact(undefined);
+    setTopologyRefreshKey((k) => k + 1);
     setError(undefined);
   }, []);
 
@@ -548,7 +560,18 @@ function App() {
             edges={activeData.edges}
           />
 
-          <SOCCopilotChat simulationData={activeData} />
+          <SOCCopilotChat
+            simulationData={activeData}
+            topologyMode={topologyMode}
+            topologySourceName={topologySourceName}
+            topologyRefreshKey={topologyRefreshKey}
+            onLaunchDemo={() => void handleLaunchDemo()}
+            onScrollToUploader={() => {
+              document
+                .getElementById("topology-uploader-section")
+                ?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+          />
 
           <AuditLog logs={activeData.logs} />
         </aside>
