@@ -332,15 +332,20 @@ function App() {
       : activeData.pending_action?.anomaly_score != null
       ? Math.round(activeData.pending_action.anomaly_score * 100)
       : activeData.status === "idle"
-      ? 12
-      : 82;
+      ? Math.max(8, Math.round(activeData.riskScore * 0.25))
+      : Math.min(96, Math.max(25, Math.round(activeData.riskScore * 0.88)));
 
   const citedIncident =
     topologyMode === "standby"
       ? "Standby — Select Demo Mode or Upload Custom JSON to activate RAG vector store"
       : activeData.pending_action?.cited_incident ||
-        (activeData.status === "completed"
-          ? "Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth"
+        (activeData.status === "completed" && activeData.blue_report
+          ? activeData.blue_report
+              .split("\n")
+              .find((l) => l.includes("Historical incident cited"))
+              ?.replace(/^.*Historical incident cited \(RAG\):\s*/i, "")
+              .replace(/\.$/, "") ||
+            "Historical RAG precedent verified and archived"
           : "Standby — RAG vector search triggers on anomaly detection");
 
   const protocolStage =

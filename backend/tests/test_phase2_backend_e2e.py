@@ -520,5 +520,148 @@ def test_copilot_standby_mode_and_custom_topology_zero_sample_bleedover(client):
     assert "auth_controller" not in custom_ans
 
 
+def test_different_custom_topologies_produce_distinct_calculated_metrics(client):
+    """Uploading two distinct custom topologies and running simulations must produce
+    genuinely calculated, distinct anomaly scores, MITRE tactics, and telemetry
+    rather than any hardcoded 0.8742 score."""
+    topo_a_low_exposure = {
+        "devices": [
+            {
+                "id": "edge_gw_a",
+                "name": "Branch Edge Gateway",
+                "ip": "10.10.0.10",
+                "subnet": "public_dmz",
+                "ports": [443],
+                "os": "Ubuntu 24.04",
+                "cves": [],
+            },
+            {
+                "id": "app_relay_a",
+                "name": "TLS Application Relay",
+                "ip": "10.10.0.20",
+                "subnet": "public_dmz",
+                "ports": [443],
+                "os": "Ubuntu 24.04",
+                "cves": [],
+            },
+            {
+                "id": "portal_svc_a",
+                "name": "Internal Web Portal",
+                "ip": "10.10.1.30",
+                "subnet": "internal_core",
+                "ports": [443],
+                "os": "Alpine Linux 3.20",
+                "cves": [],
+            },
+        ],
+        "connections": [
+            {"source": "edge_gw_a", "target": "app_relay_a", "type": "HTTPS_PROXY"},
+            {"source": "app_relay_a", "target": "portal_svc_a", "type": "HTTPS_INTERNAL"},
+        ],
+    }
+
+    up_a = client.post(
+        "/upload_topology",
+        files={
+            "topology_file": (
+                "topo_a.json",
+                json.dumps(topo_a_low_exposure).encode("utf-8"),
+                "application/json",
+            )
+        },
+    )
+    assert up_a.status_code == 200, up_a.text
+    sim_a = client.post("/start_simulation")
+    assert sim_a.status_code == 202, sim_a.text
+    state_a = client.get("/simulation_status").json()
+    pa_a = state_a["pending_action"]
+    score_a = pa_a["anomaly_score"]
+    client.post("/reset_simulation")
+
+    topo_b_high_exposure = {
+        "devices": [
+            {
+                "id": "iot_ingress_b",
+                "name": "Exposed Edge Gateway",
+                "ip": "172.16.0.5",
+                "subnet": "public_dmz",
+                "ports": [22, 80, 443],
+                "os": "Debian 11",
+                "cves": ["CVE-2023-38408", "CVE-2024-6387"],
+            },
+            {
+                "id": "bastion_jump_b",
+                "name": "Compromised Jump Host",
+                "ip": "172.16.0.15",
+                "subnet": "public_dmz",
+                "ports": [22, 445, 3389],
+                "os": "Windows Server 2019",
+                "cves": ["CVE-2020-1472", "CVE-2021-34527"],
+            },
+            {
+                "id": "postgres_vault_b",
+                "name": "Core Financial Postgres DB",
+                "ip": "172.16.10.50",
+                "subnet": "internal_core",
+                "ports": [22, 445, 5432],
+                "os": "RHEL 9",
+                "cves": ["CVE-2024-10979", "CVE-2023-5869", "CVE-2024-0985"],
+            },
+            {
+                "id": "redis_cache_b",
+                "name": "Core Redis Cluster",
+                "ip": "172.16.10.60",
+                "subnet": "internal_core",
+                "ports": [6379],
+                "os": "Debian 12",
+                "cves": ["CVE-2022-0543"],
+            },
+            {
+                "id": "backup_nas_b",
+                "name": "Immutable Archive Vault",
+                "ip": "172.16.10.70",
+                "subnet": "internal_core",
+                "ports": [445, 5432],
+                "os": "TrueNAS Enterprise",
+                "cves": ["CVE-2023-28432"],
+            },
+        ],
+        "connections": [
+            {"source": "iot_ingress_b", "target": "bastion_jump_b", "type": "SSH_TUNNEL"},
+            {"source": "bastion_jump_b", "target": "postgres_vault_b", "type": "SQL_REPLICATION"},
+            {"source": "postgres_vault_b", "target": "redis_cache_b", "type": "CACHE_SYNC"},
+            {"source": "postgres_vault_b", "target": "backup_nas_b", "type": "SMB_BACKUP"},
+        ],
+    }
+
+    up_b = client.post(
+        "/upload_topology",
+        files={
+            "topology_file": (
+                "topo_b.json",
+                json.dumps(topo_b_high_exposure).encode("utf-8"),
+                "application/json",
+            )
+        },
+    )
+    assert up_b.status_code == 200, up_b.text
+    sim_b = client.post("/start_simulation")
+    assert sim_b.status_code == 202, sim_b.text
+    state_b = client.get("/simulation_status").json()
+    pa_b = state_b["pending_action"]
+    score_b = pa_b["anomaly_score"]
+
+    assert score_a != 0.8742
+    assert score_b != 0.8742
+    assert score_a != score_b
+    assert score_a < score_b, f"Expected low-exposure score_a ({score_a}) < high-exposure score_b ({score_b})"
+    assert pa_a["mitre_tactic"] != pa_b["mitre_tactic"]
+    assert "portal_svc_a" in pa_a["justification"]
+    assert "postgres_vault_b" in pa_b["justification"]
+    assert "50,000 bytes" not in pa_a["justification"]
+    assert "50,000 bytes" not in pa_b["justification"]
+
+
+
 
 

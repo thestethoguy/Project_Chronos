@@ -107,6 +107,42 @@ export function topologyFileToNodesAndEdges(
   return { nodes, edges };
 }
 
+const HIGH_RISK_PORTS = new Set([
+  21, 22, 23, 53, 80, 88, 135, 139, 389, 445, 1433, 1521, 3306, 3389, 5432,
+  5985, 6379, 8080, 8443,
+]);
+const DB_DATA_PORTS = new Set([445, 1433, 1521, 3306, 5432, 6379, 9200, 27017]);
+const AUTH_REMOTE_PORTS = new Set([22, 23, 88, 389, 445, 3389, 5985]);
+
+function polyHash(text: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h = Math.imul(h ^ text.charCodeAt(i), 16777619) & 0x7fffffff;
+  }
+  return h;
+}
+
+function countDownstreamReach(edges: NetworkEdge[], startId: string): number {
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = adj.get(e.source) ?? [];
+    list.push(e.target);
+    adj.set(e.source, list);
+  }
+  const visited = new Set<string>([startId]);
+  const queue: string[] = [startId];
+  while (queue.length > 0) {
+    const curr = queue.shift()!;
+    for (const nxt of adj.get(curr) ?? []) {
+      if (!visited.has(nxt)) {
+        visited.add(nxt);
+        queue.push(nxt);
+      }
+    }
+  }
+  return visited.size;
+}
+
 export function computeTopologyBaselineRisk(
   nodes: NetworkNode[],
   edges: NetworkEdge[]
@@ -116,17 +152,34 @@ export function computeTopologyBaselineRisk(
     (sum, n) => sum + (n.knownCves?.length ?? 0),
     0
   );
-  const critCount = nodes.filter(
-    (n) => n.isCriticalService || n.riskScore >= 70
-  ).length;
-  const avgNodeRisk =
-    nodes.reduce((sum, n) => sum + (n.riskScore ?? 35), 0) / nodes.length;
+  const vulnCount = nodes.filter((n) => (n.knownCves?.length ?? 0) > 0).length;
+  const vulnRatio = vulnCount / nodes.length;
+
+  let riskyPortCount = 0;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  for (const n of nodes) {
+    for (const p of n.openPorts ?? []) {
+      if (HIGH_RISK_PORTS.has(p)) riskyPortCount += 1;
+    }
+  }
+
+  let crossSubnetLinks = 0;
+  for (const e of edges) {
+    const sSub = nodeMap.get(e.source)?.subnet;
+    const tSub = nodeMap.get(e.target)?.subnet;
+    if (sSub && tSub && sSub !== tSub) {
+      crossSubnetLinks += 1;
+    }
+  }
+
   const score = Math.round(
-    avgNodeRisk * 0.55 +
-      Math.min(28, totalCves * 4) +
-      Math.min(18, critCount * 2 + Math.floor(edges.length / 3))
+    14 +
+      vulnRatio * 24 +
+      Math.min(24, totalCves * 3.5) +
+      Math.min(12, riskyPortCount * 1.2) +
+      Math.min(10, crossSubnetLinks * 2.5)
   );
-  return Math.max(12, Math.min(92, score));
+  return Math.max(14, Math.min(78, score));
 }
 
 export function buildStandbySimulationData(): SimulationData {
@@ -190,61 +243,247 @@ export function buildRemediationItemsFromTopology(topo: NetworkTopologyFile) {
   }));
 }
 
-function buildMockPendingAction(): PendingAction {
+interface CorridorProfile {
+  source: string;
+  target: string;
+  hour_of_day: number;
+  bytes_transferred: number;
+  failed_login_attempts: number;
+  anomaly_score: number;
+  mitre_tactic: string;
+  cited_incident: string;
+  aws_remediation: NonNullable<PendingAction["aws_remediation"]>;
+}
+
+export function computeCorridorProfile(
+  nodes: NetworkNode[],
+  edges: NetworkEdge[]
+): CorridorProfile {
   const coreIds = new Set(
-    state.nodes
+    nodes
       .filter((n) => n.subnet === "internal_core" || n.isCriticalService)
       .map((n) => n.id)
   );
   const preferredEdge =
-    state.edges.find(
+    edges.find(
       (e) =>
         (e.source === "web_server_01" && e.target === "db_secret_01") ||
         (e.source === "web_server_01" && e.target === "auth_controller") ||
         (e.source === "auth-ctl" && e.target === "dc-01")
     ) ??
-    state.edges.find((e) => coreIds.has(e.target) && !coreIds.has(e.source)) ??
-    state.edges.find((e) => coreIds.has(e.target)) ??
-    state.edges[state.edges.length - 1] ??
-    state.edges[0] ?? {
-      source: "web_server_01",
-      target: "db_secret_01",
+    edges.find((e) => coreIds.has(e.target) && !coreIds.has(e.source)) ??
+    edges.find((e) => coreIds.has(e.target)) ??
+    edges[edges.length - 1] ??
+    edges[0] ?? {
+      id: "e0",
+      source: nodes[0]?.id ?? "node_0",
+      target: nodes[1]?.id ?? nodes[0]?.id ?? "node_1",
+      active: false,
     };
+
+  const srcId = preferredEdge.source;
+  const tgtId = preferredEdge.target;
+  const srcNode = nodes.find((n) => n.id === srcId);
+  const tgtNode = nodes.find((n) => n.id === tgtId);
+
+  const srcCves = srcNode?.vulnerabilities?.length ?? 0;
+  const tgtCves = tgtNode?.vulnerabilities?.length ?? 0;
+  const corridorCves = srcCves + tgtCves;
+  const totalCves = nodes.reduce(
+    (sum, n) => sum + (n.vulnerabilities?.length ?? 0),
+    0
+  );
+
+  const tgtPorts = new Set(tgtNode?.openPorts ?? []);
+  const srcPorts = new Set(srcNode?.openPorts ?? []);
+  const combinedPorts = new Set([...srcPorts, ...tgtPorts]);
+
+  let highRiskPortHits = 0;
+  let dbPortHits = 0;
+  let authPortHits = 0;
+  for (const p of combinedPorts) {
+    if (HIGH_RISK_PORTS.has(p)) highRiskPortHits += 1;
+    if (DB_DATA_PORTS.has(p)) dbPortHits += 1;
+    if (AUTH_REMOTE_PORTS.has(p)) authPortHits += 1;
+  }
+
+  const crossSubnet =
+    (srcNode?.subnet ?? "public_dmz") !== (tgtNode?.subnet ?? "internal_core")
+      ? 1
+      : 0;
+  const tgtCritical =
+    tgtNode?.isCriticalService || tgtNode?.subnet === "internal_core" ? 1 : 0;
+  const downstreamReach = countDownstreamReach(tgtId, edges);
+
+  const topoSignature = `${nodes.map((n) => n.id).sort().join(",")}|${srcId}->${tgtId}|cves=${totalCves}:${corridorCves}|ports=${Array.from(combinedPorts).sort((a, b) => a - b).join(",")}`;
+  const sigHash = polyHash(topoSignature);
+
+  const hour_of_day =
+    corridorCves > 0 || tgtCritical ? sigHash % 5 : 8 + (sigHash % 9);
+
+  const baseBytes = 1400 + nodes.length * 420 + edges.length * 310;
+  const cveBytes = corridorCves * 14500 + totalCves * 2800;
+  const portBytes = dbPortHits * 26000 + highRiskPortHits * 6800;
+  const reachBytes = downstreamReach * 4900 + crossSubnet * 9500;
+  const jitterBytes = sigHash % 4300;
+  const bytes_transferred = Math.min(
+    250000,
+    Math.max(950, baseBytes + cveBytes + portBytes + reachBytes + jitterBytes)
+  );
+
+  const failed_login_attempts = Math.min(
+    65,
+    Math.max(
+      1,
+      1 +
+        corridorCves * 5 +
+        authPortHits * 6 +
+        highRiskPortHits * 2 +
+        crossSubnet * 3 +
+        (sigHash % 5)
+    )
+  );
+
+  // Continuous mathematical anomaly score in [0.4200, 0.9850]
+  const byteRatio = Math.min(1, bytes_transferred / 95000);
+  const loginRatio = Math.min(1, failed_login_attempts / 32);
+  const cveRatio = Math.min(1, (corridorCves * 2 + totalCves * 0.4) / 10);
+  const portRatio = Math.min(1, (highRiskPortHits + dbPortHits * 1.5) / 6);
+  const reachRatio = Math.min(
+    1,
+    (downstreamReach + crossSubnet * 2 + tgtCritical * 2) / 8
+  );
+  const microOffset = ((sigHash % 89) - 44) * 0.0003;
+
+  const rawScore =
+    0.38 +
+    byteRatio * 0.19 +
+    loginRatio * 0.15 +
+    cveRatio * 0.12 +
+    portRatio * 0.08 +
+    reachRatio * 0.06 +
+    microOffset;
+  const anomaly_score = Number(
+    Math.min(0.985, Math.max(0.42, rawScore)).toFixed(4)
+  );
+
+  const blob = `${srcId} ${tgtId} ${tgtNode?.label ?? ""} ${preferredEdge.edgeType ?? ""}`.toLowerCase();
+
+  let mitre_tactic =
+    "Lateral Movement (T1210 - Exploitation of Remote Services)";
+  let cited_incident =
+    "Incident 2024-09: DMZ Web Tier Remote Service Exploitation & Lateral Pivot";
+
+  if (
+    ["auth", "domain", "dc", "kerberos", "ldap", "controller"].some((k) =>
+      blob.includes(k)
+    ) ||
+    tgtPorts.has(88) ||
+    tgtPorts.has(389) ||
+    tgtPorts.has(636)
+  ) {
+    mitre_tactic = "Lateral Movement (T1550.002 - Pass the Hash)";
+    cited_incident =
+      "Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth";
+  } else if (
+    ["db", "sql", "postgres", "mysql", "redis", "mongo", "vault", "ledger", "storage"].some(
+      (k) => blob.includes(k)
+    ) ||
+    [1433, 1521, 3306, 5432, 6379, 27017].some((p) => tgtPorts.has(p))
+  ) {
+    mitre_tactic =
+      "Collection & Exfiltration (T1213 - Automated Database Extraction)";
+    cited_incident =
+      "Incident 2024-11: Unauthorized SQL Bulk Extraction & Core Vault Staging";
+  } else if (tgtPorts.has(445) || blob.includes("smb")) {
+    mitre_tactic = "Lateral Movement (T1021.002 - SMB/Windows Admin Shares)";
+    cited_incident =
+      "Incident 2024-08: East-West SMB Admin Share Traversal & Worm Propagation";
+  } else if (tgtPorts.has(22) || blob.includes("ssh")) {
+    mitre_tactic = "Lateral Movement (T1021.004 - SSH Credential Hijacking)";
+    cited_incident =
+      "Incident 2025-01: Compromised Bastion SSH Key Replay Across Internal Subnets";
+  } else if (tgtPorts.has(3389) || blob.includes("rdp")) {
+    mitre_tactic = "Lateral Movement (T1021.001 - Remote Desktop Protocol)";
+    cited_incident =
+      "Incident 2024-10: Privileged RDP Session Hijacking into Core Subnet";
+  } else if (tgtPorts.has(53) || blob.includes("dns")) {
+    mitre_tactic = "Command and Control (T1071.004 - DNS Tunneling)";
+    cited_incident =
+      "Incident 2024-07: Internal DNS Resolver C2 Tunneling & Beacon Exfiltration";
+  }
+
+  const isAuthTarget = ["auth", "domain", "dc", "iam", "ldap", "controller"].some(
+    (k) => blob.includes(k)
+  );
+  const roleName = isAuthTarget
+    ? `ChronosRole-${tgtId.replace(/[^a-zA-Z0-9]/g, "")}`
+    : `ChronosSG-${tgtId.replace(/[^a-zA-Z0-9]/g, "")}`;
+
+  const aws_remediation: NonNullable<PendingAction["aws_remediation"]> =
+    isAuthTarget
+      ? {
+          role_name: roleName,
+          before: {
+            Version: "2012-10-17",
+            Statement: [
+              {
+                Effect: "Allow",
+                Action: ["iam:PassRole", "sts:AssumeRole", "ec2:*"],
+                Resource: "*",
+              },
+            ],
+          },
+          after: {
+            Version: "2012-10-17",
+            Statement: [
+              {
+                Effect: "Allow",
+                Action: ["sts:AssumeRole"],
+                Resource: `arn:aws:iam::account:role/${roleName}`,
+              },
+            ],
+          },
+          change_summary: `Revoked wildcard 'iam:PassRole' and scoped 'sts:AssumeRole' on ${roleName} to block credential replay toward ${tgtId}.`,
+          data_source: "mock",
+          executed: false,
+        }
+      : {
+          instance_id: tgtId,
+          before_security_groups: [`sg-default-${tgtNode?.subnet ?? "core"}`],
+          after_security_groups: [
+            `sg-quarantine-deny-all-${tgtId.slice(0, 10)}`,
+          ],
+          ingress_rules: [],
+          egress_rules: [],
+          change_summary: `Drafted zero-ingress/zero-egress quarantine security group for ${tgtId} (${tgtNode?.ip ?? "10.0.1.x"}, ports [${Array.from(tgtPorts).join(", ") || "none"}]).`,
+          data_source: "mock",
+          executed: false,
+        };
+
   return {
-    source: preferredEdge.source,
-    target: preferredEdge.target,
-    anomaly_score: 0.8742,
-    mitre_tactic: "Lateral Movement (T1550.002 - Pass the Hash)",
-    cited_incident:
-      "Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth",
-    justification: `Isolation Forest scored the event 0.8742 (ANOMALY): Activity outside normal office hours (06:00–22:00); Excessive data transfer (50,000 bytes); High failed-login count (20 attempts). Closest historical incident: 'Incident 2025-02: Reverse Proxy Credential Replay & Lateral Movement to Core Auth'. Severing ${preferredEdge.source} -> ${preferredEdge.target} cuts the lateral-movement path. Awaiting human approval.`,
-    aws_remediation: {
-      role_name: "DomainAdminRole",
-      before: {
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: ["iam:PassRole", "sts:AssumeRole", "ec2:*"],
-            Resource: "*",
-          },
-        ],
-      },
-      after: {
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Effect: "Allow",
-            Action: ["sts:AssumeRole", "ec2:*"],
-            Resource: "*",
-          },
-        ],
-      },
-      change_summary:
-        "Removed 'iam:PassRole' from the inspected policy of DomainAdminRole.",
-      data_source: "mock",
-      executed: false,
-    },
+    source: srcId,
+    target: tgtId,
+    hour_of_day,
+    bytes_transferred,
+    failed_login_attempts,
+    anomaly_score,
+    mitre_tactic,
+    cited_incident,
+    aws_remediation,
+  };
+}
+
+function buildMockPendingAction(): PendingAction {
+  const profile = computeCorridorProfile(state.nodes, state.edges);
+  return {
+    source: profile.source,
+    target: profile.target,
+    anomaly_score: profile.anomaly_score,
+    mitre_tactic: profile.mitre_tactic,
+    cited_incident: profile.cited_incident,
+    justification: `Isolation Forest scored telemetry on ${profile.source} -> ${profile.target} at ${profile.anomaly_score.toFixed(4)} (ANOMALY): Event at ${String(profile.hour_of_day).padStart(2, "0")}:17 UTC; ${profile.bytes_transferred.toLocaleString()} bytes transferred; ${profile.failed_login_attempts} failed authentication attempts. Closest historical precedent: '${profile.cited_incident}'. Severing ${profile.source} -> ${profile.target} cuts the active ${profile.mitre_tactic} path. Awaiting human approval.`,
+    aws_remediation: profile.aws_remediation,
     proposed_at: new Date().toISOString(),
   };
 }
@@ -255,13 +494,16 @@ const applyNextStep = (): void => {
   }
 
   step += 1;
+  const profile = computeCorridorProfile(state.nodes, state.edges);
   const proposal = buildMockPendingAction();
+  const baselineRisk = computeTopologyBaselineRisk(state.nodes, state.edges);
+
   const entryNode =
     state.nodes.find((n) => n.id === "proxy_ingress")?.id ??
     state.edges.find((e) => e.target === proposal.source)?.source ??
     state.nodes.find((n) => n.subnet === "public_dmz")?.id ??
     state.nodes[0]?.id ??
-    "proxy_ingress";
+    proposal.source;
   const hopNode =
     proposal.source !== entryNode
       ? proposal.source
@@ -281,11 +523,19 @@ const applyNextStep = (): void => {
     state.edges[1]?.id ??
     firstEdge;
 
+  const entryCves =
+    state.nodes.find((n) => n.id === entryNode)?.vulnerabilities?.length ?? 0;
+  const hopCves =
+    state.nodes.find((n) => n.id === hopNode)?.vulnerabilities?.length ?? 0;
+
   if (step === 1) {
     updateNodeStatus(entryNode, "compromised");
     activateEdge(firstEdge, true);
 
-    state.riskScore = 62;
+    state.riskScore = Math.min(
+      92,
+      Math.max(baselineRisk + 8, baselineRisk + 7 + entryCves * 5)
+    );
     state.currentStep = 1;
     state.compromised_node = entryNode;
     state.latest_event = `Red Agent breached perimeter foothold '${entryNode}' and invoked graph_scan_neighbors('${entryNode}').`;
@@ -298,14 +548,24 @@ const applyNextStep = (): void => {
     updateNodeStatus(hopNode, "compromised");
     activateEdge(secondEdge, true);
 
-    state.riskScore = 82;
+    state.riskScore = Math.min(
+      95,
+      Math.max(
+        baselineRisk + 16,
+        Math.round(
+          baselineRisk * 0.55 +
+            profile.anomaly_score * 42 +
+            (entryCves + hopCves) * 3
+        )
+      )
+    );
     state.currentStep = 2;
     state.compromised_node = hopNode;
-    state.mitre_tactic = "Lateral Movement (T1550.002 - Pass the Hash)";
-    state.latest_event = `Red Agent pivoted to '${hopNode}' via NTLM credential replay (T1550.002), targeting '${proposal.target}'.`;
+    state.mitre_tactic = proposal.mitre_tactic;
+    state.latest_event = `Red Agent pivoted to '${hopNode}' via ${proposal.mitre_tactic}, targeting '${proposal.target}'.`;
 
     addLog(
-      `Red Agent moved laterally to ${hopNode} (T1550.002 Pass the Hash).`,
+      `Red Agent moved laterally to ${hopNode} (${proposal.mitre_tactic}).`,
       "warning"
     );
   } else if (step >= 3) {
@@ -313,7 +573,13 @@ const applyNextStep = (): void => {
     activateEdge(secondEdge, true);
     state.status = "awaiting_approval";
     state.currentStep = 4;
-    state.riskScore = 87;
+    state.riskScore = Math.min(
+      98,
+      Math.max(
+        baselineRisk + 14,
+        Math.round(baselineRisk * 0.42 + proposal.anomaly_score * 58)
+      )
+    );
     state.compromised_node = proposal.target;
     state.mitre_tactic = proposal.mitre_tactic;
     state.anomaly_score = proposal.anomaly_score;
@@ -322,20 +588,20 @@ const applyNextStep = (): void => {
     state.action_taken = "Pending human approval";
     state.red_report =
       `THREAT ACTOR REPORT (tool-grounded)\n` +
-      `a) Technique: T1550.002 — Pass the Hash (Lateral Movement) via cached NTLM hash from ${entryNode}.\n` +
+      `a) Technique: ${proposal.mitre_tactic} launched from ${entryNode}.\n` +
       `b) Discovered path (graph_scan_neighbors): ${entryNode} -> ${proposal.source} -> ${proposal.target}.\n` +
-      `c) Tooling: Impacket (smbexec/psexec), CrackMapExec for credential replay.\n` +
-      `d) OPSEC: after-hours activity (03:17 UTC), slow-and-low authentication attempts.\n` +
-      `e) Next objective: reach ${proposal.target} and stage crown-jewel data for exfiltration.`;
+      `c) Telemetry footprint: ${profile.bytes_transferred.toLocaleString()} bytes staged across ${profile.failed_login_attempts} authentication attempts.\n` +
+      `d) OPSEC: activity timestamped at ${String(profile.hour_of_day).padStart(2, "0")}:17 UTC.\n` +
+      `e) Next objective: compromise ${proposal.target} and exfiltrate crown-jewel assets.`;
     state.blue_report =
       `INCIDENT RESPONSE PROPOSAL (awaiting human approval)\n` +
-      `1) ML verdict: ANOMALY — anomaly_score ${proposal.anomaly_score.toFixed(4)}.\n` +
+      `1) ML verdict: ANOMALY — anomaly_score ${proposal.anomaly_score.toFixed(4)} (${profile.bytes_transferred.toLocaleString()} bytes, ${profile.failed_login_attempts} failed logins, hour=${profile.hour_of_day}).\n` +
       `2) Historical incident cited (RAG): ${proposal.cited_incident}.\n` +
       `3) AWS remediation draft (executed=False): ${proposal.aws_remediation?.change_summary ?? "Isolation group drafted"}.\n` +
       `4) Proposed containment: sever ${proposal.source} -> ${proposal.target} (${proposal.mitre_tactic}).`;
 
     addLog(
-      `Blue Agent proposes severing ${proposal.source} -> ${proposal.target} (ML score ${proposal.anomaly_score}) — awaiting human analyst approval.`,
+      `Blue Agent proposes severing ${proposal.source} -> ${proposal.target} (ML score ${proposal.anomaly_score.toFixed(4)}) — awaiting human analyst approval.`,
       "defence"
     );
   }
@@ -398,10 +664,12 @@ export const mockApproveAction =
       };
     }
 
+    const baselineRisk = computeTopologyBaselineRisk(state.nodes, state.edges);
+    const reduction = Math.max(12, Math.round(baselineRisk * 0.45));
     const taken = `Severed ${action.source} -> ${action.target} (Approved by human-analyst)`;
     state.status = "completed";
     state.currentStep = 6;
-    state.riskScore = 34;
+    state.riskScore = Math.max(8, baselineRisk - reduction);
     state.pending_action = null;
     state.action_taken = taken;
 
@@ -413,9 +681,11 @@ export const mockRejectAction =
   async (): Promise<{ status: string; action_taken: string }> => {
     await wait(200);
 
+    const baselineRisk = computeTopologyBaselineRisk(state.nodes, state.edges);
     const taken = "No action taken (proposal rejected by analyst).";
     state.status = "completed";
     state.currentStep = 6;
+    state.riskScore = Math.min(98, Math.max(baselineRisk + 12, state.riskScore));
     state.pending_action = null;
     state.action_taken = taken;
 

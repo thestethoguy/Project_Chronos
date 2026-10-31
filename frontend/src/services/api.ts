@@ -92,26 +92,59 @@ function mapStatus(raw: string): SimulationStatus {
 }
 
 /**
- * Derives a 0–100 risk score from the backend state.
- * Uses anomaly_score (0–1) when available, otherwise infers from status.
+ * Derives a 0–100 risk score dynamically from the active topology baseline and backend ML telemetry.
  */
-function deriveRiskScore(backend: BackendSimulationState): number {
+function deriveRiskScore(
+  backend: BackendSimulationState,
+  baselineRisk: number
+): number {
+  const anomaly =
+    backend.anomaly_score ?? backend.pending_action?.anomaly_score ?? null;
+
   if (backend.status === "completed") {
-    return 35;
+    const wasRejected = backend.action_taken
+      ?.toLowerCase()
+      .includes("rejected");
+    if (wasRejected) {
+      return Math.min(
+        98,
+        Math.max(
+          baselineRisk + 14,
+          Math.round(baselineRisk * 0.42 + (anomaly ?? 0.75) * 58)
+        )
+      );
+    }
+    const reduction = Math.max(12, Math.round(baselineRisk * 0.45));
+    return Math.max(8, baselineRisk - reduction);
   }
-  if (backend.anomaly_score != null) {
-    return Math.round(backend.anomaly_score * 100);
+
+  if (backend.status === "awaiting_approval") {
+    const effectiveAnomaly = anomaly ?? Math.min(0.95, 0.48 + baselineRisk / 160);
+    return Math.min(
+      98,
+      Math.max(
+        baselineRisk + 14,
+        Math.round(baselineRisk * 0.42 + effectiveAnomaly * 58)
+      )
+    );
   }
-  switch (backend.status) {
-    case "running":
-      return 68;
-    case "awaiting_approval":
-      return 86;
-    case "error":
-      return 90;
-    default:
-      return initialMockData.riskScore;
+
+  if (backend.status === "running") {
+    const effectiveAnomaly = anomaly ?? Math.min(0.88, 0.42 + baselineRisk / 180);
+    return Math.min(
+      94,
+      Math.max(
+        baselineRisk + 10,
+        Math.round(baselineRisk * 0.55 + effectiveAnomaly * 38)
+      )
+    );
   }
+
+  if (backend.status === "error") {
+    return Math.min(96, baselineRisk + 22);
+  }
+
+  return baselineRisk;
 }
 
 /** Maps backend status to a timeline step (0–6). */
@@ -305,15 +338,8 @@ export function adaptBackendResponse(
     backend.status
   );
 
-  const baselineRisk = topo
-    ? computeTopologyBaselineRisk(nodes, edges)
-    : initialMockData.riskScore;
-  const dynamicRiskScore =
-    status === "idle"
-      ? baselineRisk
-      : status === "completed"
-      ? Math.max(15, baselineRisk - 28)
-      : deriveRiskScore(backend);
+  const baselineRisk = computeTopologyBaselineRisk(nodes, edges);
+  const dynamicRiskScore = deriveRiskScore(backend, baselineRisk);
 
   const dynamicRemediations = topo
     ? buildRemediationItemsFromTopology(topo)
