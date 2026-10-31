@@ -432,7 +432,7 @@ function App() {
             edges={data.edges}
           />
 
-          <SOCCopilotChat />
+          <SOCCopilotChat simulationData={data} />
 
           <AuditLog logs={data.logs} />
         </aside>

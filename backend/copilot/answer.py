@@ -1,6 +1,9 @@
 # backend/copilot/answer.py
+from __future__ import annotations
+
 import json
 import logging
+from typing import Any, Optional
 
 from backend.copilot.nl_to_cypher import (
     COPILOT_SYSTEM_PROMPT,
@@ -14,71 +17,112 @@ from backend.db import topology_store
 logger = logging.getLogger("chronos.copilot")
 
 SUMMARY_PROMPT = (
-    "Summarize this Cypher query result in one or two plain-language "
-    "sentences for a security analyst. Do not invent any device or fact "
-    "not present in the data. If the result is empty, say nothing matched."
+    "You are the Project Chronos SOC Copilot — an intelligent, conversational cybersecurity "
+    "analyst assistant. Answer the analyst's question in 2 to 4 clear, friendly, everyday "
+    "sentences grounded strictly in the provided topology data, Cypher query results, and "
+    "live simulation state. Do not invent any device ID that is not in the data."
 )
 
 
-def answer_question(driver, question: str) -> dict:
-    """Answer a read-only topology question.
+def answer_question(
+    driver: Any,
+    question: str,
+    topology_override: Optional[dict] = None,
+    session_context: Optional[dict] = None,
+) -> dict:
+    """Answer a read-only topology or behavioral SOC question.
 
     `driver` may be None (Neo4j unconfigured/unreachable) -> the in-memory topology mirror is used.
     Every Cypher string, from Groq or from the offline rules, passes `validate_cypher` first;
     ValueError (-> HTTP 422) is raised for unsafe or untranslatable questions.
     """
-    use_llm = llm_available()
-    plan, cypher = None, None
+    topology = (
+        topology_override
+        if (isinstance(topology_override, dict) and isinstance(topology_override.get("devices"), list))
+        else topology_store.get_topology()
+    )
 
-    if use_llm:
+    # Always compute the rule-based plan first so destructive requests are caught deterministically
+    # and conversational / multi-hop intents have full topology + session context.
+    plan = rule_based_plan(
+        question,
+        devices=topology.get("devices", []),
+        topology=topology,
+        session_context=session_context,
+    )
+    validated_plan_cypher = validate_cypher(plan["cypher"])  # raises ValueError on write intents!
+
+    use_llm = llm_available()
+    cypher: Optional[str] = None
+    conversational_intents = {"greeting", "behavioral_explain", "risk_and_hardening", "multi_device_analysis"}
+
+    if use_llm and plan.get("intent") not in conversational_intents:
         try:
-            cypher = validate_cypher(llm_chat(COPILOT_SYSTEM_PROMPT, question))
+            device_hint = ", ".join(
+                f"{d['id']} ({d.get('name', d['id'])}, subnet={d.get('subnet', 'internal_core')})"
+                for d in topology.get("devices", [])[:25]
+            )
+            prompt_with_devices = (
+                f"{COPILOT_SYSTEM_PROMPT}\n"
+                f"Currently loaded devices in the topology: {device_hint}\n"
+            )
+            cypher = validate_cypher(llm_chat(prompt_with_devices, question))
         except ValueError:
-            raise  # unsafe / empty model output
+            raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Groq unavailable (%s); using offline rules.", type(exc).__name__)
+            logger.warning("Groq unavailable (%s); using dynamic topology rules.", type(exc).__name__)
             use_llm = False
 
-    topology = topology_store.get_topology()
     if cypher is None:
-        plan = rule_based_plan(question, topology["devices"])
-        cypher = validate_cypher(plan["cypher"])  # destructive intents are rejected here
+        cypher = validated_plan_cypher
 
     records, data_source = None, "mirror"
-    if driver is not None:
+    if driver is not None and topology_override is None and plan.get("intent") not in conversational_intents:
         try:
-            from neo4j import READ_ACCESS
-            from neo4j.exceptions import Neo4jError
+            import importlib
+
+            _neo4j: Any = importlib.import_module("neo4j")
+            _neo4j_exc: Any = importlib.import_module("neo4j.exceptions")
 
             try:
-                # Read-only session: Neo4j itself rejects writes, even if validation missed one.
-                with driver.session(default_access_mode=READ_ACCESS) as session:
+                with driver.session(default_access_mode=_neo4j.READ_ACCESS) as session:
                     records = [dict(r) for r in session.run(cypher)]
                 data_source = "neo4j"
-            except Neo4jError as exc:
+            except _neo4j_exc.Neo4jError as exc:
                 raise ValueError(f"Query could not be run: {exc.code}") from exc
         except ValueError:
             raise
-        except Exception as exc:  # noqa: BLE001 - connection dropped etc.: fall back to the mirror
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Neo4j query failed (%s); answering from topology mirror.", type(exc).__name__)
 
     if records is None:
-        if plan is None:  # LLM cypher can't run on the mirror: execute the equivalent rule-based intent
-            plan = rule_based_plan(question, topology["devices"])
-            cypher = validate_cypher(plan["cypher"])
         records = run_on_mirror(plan, topology)
+
+    offline_answer = summarize_offline(
+        question,
+        plan,
+        records,
+        topology=topology,
+        session_context=session_context,
+    )
 
     summary = None
     if use_llm:
         try:
             summary = llm_chat(
                 SUMMARY_PROMPT,
-                f"Question: {question}\nCypher: {cypher}\nResult: {json.dumps(records, default=str)}",
+                (
+                    f"Question: {question}\n"
+                    f"Cypher: {cypher}\n"
+                    f"Query Result: {json.dumps(records, default=str)}\n"
+                    f"Deterministic Baseline Analysis: {offline_answer}"
+                ),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Groq summary failed (%s); using offline summary.", type(exc).__name__)
-    if summary is None:
-        summary = summarize_offline(question, plan, records)
+            logger.warning("Groq summary failed (%s); using dynamic offline summary.", type(exc).__name__)
+
+    if not summary:
+        summary = offline_answer
 
     return {
         "cypher_query": cypher,

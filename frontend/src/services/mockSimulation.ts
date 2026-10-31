@@ -107,7 +107,39 @@ export function topologyFileToNodesAndEdges(
   return { nodes, edges };
 }
 
+function buildRemediationItemsFromTopology(topo: NetworkTopologyFile) {
+  const withCves = topo.devices.filter((d) => d.cves && d.cves.length > 0);
+  if (withCves.length === 0) {
+    return topo.devices.slice(0, 3).map((d, idx) => ({
+      id: `rem-custom-${idx + 1}`,
+      priority: idx + 1,
+      title: `Harden & segment ${d.name || d.id} (${d.subnet})`,
+      affectedNode: d.id,
+      riskReduction: 14,
+      estimatedEffort: "Low" as const,
+      recommendedAction: `Enforce strict firewall ACLs and MFA on ${d.id} (${d.ip}) running ${d.os}.`,
+    }));
+  }
+  return withCves.map((d, idx) => ({
+    id: `rem-cve-${idx + 1}`,
+    priority: idx + 1,
+    title: `Patch ${d.cves.join(", ")} on ${d.name || d.id}`,
+    affectedNode: d.id,
+    riskReduction: Math.min(30, 12 + d.cves.length * 8),
+    estimatedEffort: (d.subnet === "internal_core" ? "Medium" : "Low") as
+      | "Low"
+      | "Medium"
+      | "High",
+    recommendedAction: `Apply vendor security updates for ${d.cves.join(", ")} on ${d.id} (${d.ip}, ${d.os}) and restrict lateral ports [${(d.ports ?? []).join(", ")}].`,
+  }));
+}
+
 function buildMockPendingAction(): PendingAction {
+  const coreIds = new Set(
+    state.nodes
+      .filter((n) => n.subnet === "internal_core" || n.isCriticalService)
+      .map((n) => n.id)
+  );
   const preferredEdge =
     state.edges.find(
       (e) =>
@@ -115,7 +147,9 @@ function buildMockPendingAction(): PendingAction {
         (e.source === "web_server_01" && e.target === "auth_controller") ||
         (e.source === "auth-ctl" && e.target === "dc-01")
     ) ??
-    state.edges[2] ??
+    state.edges.find((e) => coreIds.has(e.target) && !coreIds.has(e.source)) ??
+    state.edges.find((e) => coreIds.has(e.target)) ??
+    state.edges[state.edges.length - 1] ??
     state.edges[0] ?? {
       source: "web_server_01",
       target: "db_secret_01",
@@ -165,21 +199,25 @@ const applyNextStep = (): void => {
   }
 
   step += 1;
+  const proposal = buildMockPendingAction();
   const entryNode =
     state.nodes.find((n) => n.id === "proxy_ingress")?.id ??
+    state.edges.find((e) => e.target === proposal.source)?.source ??
+    state.nodes.find((n) => n.subnet === "public_dmz")?.id ??
     state.nodes[0]?.id ??
     "proxy_ingress";
   const hopNode =
-    state.nodes.find((n) => n.id === "web_server_01")?.id ??
-    state.nodes[1]?.id ??
-    entryNode;
+    proposal.source !== entryNode
+      ? proposal.source
+      : state.nodes.find((n) => n.id === "web_server_01")?.id ??
+        state.nodes[1]?.id ??
+        entryNode;
   const firstEdge =
     state.edges.find(
       (e) => e.source === entryNode && e.target === hopNode
     )?.id ??
     state.edges[0]?.id ??
     "e1";
-  const proposal = buildMockPendingAction();
   const secondEdge =
     state.edges.find(
       (e) => e.source === proposal.source && e.target === proposal.target
@@ -338,6 +376,11 @@ export const mockResetSimulation =
       const converted = topologyFileToNodesAndEdges(customTopology);
       state.nodes = converted.nodes;
       state.edges = converted.edges;
+      state.remediations = buildRemediationItemsFromTopology(customTopology);
+      state.totalAssets = converted.nodes.length;
+      state.vulnerableAssets = converted.nodes.filter(
+        (n) => (n.knownCves?.length ?? 0) > 0
+      ).length;
     }
     step = 0;
 
@@ -373,8 +416,16 @@ export const mockUploadTopology = async (
   const converted = topologyFileToNodesAndEdges(raw);
   state.nodes = converted.nodes;
   state.edges = converted.edges;
+  state.remediations = buildRemediationItemsFromTopology(raw);
+  state.totalAssets = converted.nodes.length;
+  state.vulnerableAssets = converted.nodes.filter(
+    (n) => (n.knownCves?.length ?? 0) > 0
+  ).length;
   state.status = "idle";
   state.pending_action = null;
+  state.compromised_node = undefined;
+  state.red_report = undefined;
+  state.blue_report = undefined;
   state.currentStep = 0;
   step = 0;
   addLog(

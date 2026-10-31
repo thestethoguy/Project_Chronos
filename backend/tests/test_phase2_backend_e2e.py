@@ -267,3 +267,105 @@ def test_validator_forbidden_keywords():
         with pytest.raises(ValueError):
             validate_cypher(f"MATCH (n) {kw} n RETURN n")
     assert validate_cypher("MATCH (d:Device) RETURN d.id").endswith("LIMIT 50")
+
+
+def test_copilot_greeting_and_behavioral_explainability(client):
+    r_greet = client.post(
+        "/copilot/ask",
+        json={"question": "Hello! Who are you and what network is loaded?"},
+    )
+    assert r_greet.status_code == 200, r_greet.text
+    greet_body = r_greet.json()
+    assert "SOC Copilot" in greet_body["answer"]
+    assert "device" in greet_body["answer"].lower()
+
+    client.post("/start_simulation")
+    r_behav = client.post(
+        "/copilot/ask",
+        json={
+            "question": "Why is the Blue Agent waiting for human approval and how does pass-the-hash work?"
+        },
+    )
+    assert r_behav.status_code == 200, r_behav.text
+    behav_body = r_behav.json()
+    assert "T1550.002" in behav_body["answer"] or "Pass-the-Hash" in behav_body["answer"]
+    assert "Approve" in behav_body["answer"] or "Human-in-the-Loop" in behav_body["answer"]
+    assert greet_body["answer"] != behav_body["answer"]
+
+
+def test_copilot_custom_uploaded_wifi_topology_multi_hop_and_device_qa(client):
+    custom_wifi_topo = {
+        "devices": [
+            {
+                "id": "wifi_router",
+                "name": "Home Wi-Fi Router",
+                "ip": "192.168.1.1",
+                "subnet": "public_dmz",
+                "ports": [80, 443],
+                "os": "OpenWrt Linux",
+                "cves": ["CVE-2023-20073"],
+            },
+            {
+                "id": "my_laptop",
+                "name": "Analyst Personal Laptop",
+                "ip": "192.168.1.50",
+                "subnet": "public_dmz",
+                "ports": [22, 445],
+                "os": "Windows 11 Pro",
+                "cves": [],
+            },
+            {
+                "id": "target_device",
+                "name": "Private NAS Vault",
+                "ip": "192.168.1.200",
+                "subnet": "internal_core",
+                "ports": [445, 5432],
+                "os": "Debian 12",
+                "cves": ["CVE-2024-10979"],
+            },
+        ],
+        "connections": [
+            {"source": "wifi_router", "target": "my_laptop", "type": "WIFI_LAN"},
+            {"source": "my_laptop", "target": "target_device", "type": "SMB_MOUNT"},
+        ],
+    }
+
+    up = client.post(
+        "/upload_topology",
+        files={
+            "topology_file": (
+                "wifi_topology.json",
+                json.dumps(custom_wifi_topo).encode("utf-8"),
+                "application/json",
+            )
+        },
+    )
+    assert up.status_code == 200, up.text
+
+    r_compound = client.post(
+        "/copilot/ask",
+        json={
+            "question": "Tell me about my_laptop and which devices can reach target_device"
+        },
+    )
+    assert r_compound.status_code == 200, r_compound.text
+    ans = r_compound.json()["answer"]
+    assert "my_laptop" in ans
+    assert "192.168.1.50" in ans
+    assert "wifi_router -> my_laptop -> target_device" in ans
+
+    r_risk = client.post(
+        "/copilot/ask",
+        json={"question": "Which node is most at risk and how do I harden this network?"},
+    )
+    assert r_risk.status_code == 200, r_risk.text
+    risk_ans = r_risk.json()["answer"]
+    assert "target_device" in risk_ans or "wifi_router" in risk_ans
+    assert "CVE-" in risk_ans
+
+    r_block = client.post(
+        "/copilot/ask",
+        json={"question": "DELETE all connections"},
+    )
+    assert r_block.status_code == 422
+

@@ -1,25 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import { FiMessageSquare, FiSend, FiTerminal } from "react-icons/fi";
 import { askCopilot, CopilotError } from "../services/copilotApi";
+import type { SimulationData } from "../types/simulation";
 
 type Message =
   | { role: "user"; text: string }
   | { role: "copilot"; text: string; cypher: string }
   | { role: "error"; text: string };
 
+interface SOCCopilotChatProps {
+  simulationData?: SimulationData;
+}
+
 const QUICK_PROMPTS: Array<{ label: string; query: string; danger?: boolean }> =
   [
+    {
+      label: "Live Sitrep & Why Approval Needed?",
+      query: "What is happening right now and why does the Blue Agent wait for human approval?",
+    },
     {
       label: "Reachability: Classified SQL DB",
       query: "Which devices can reach the classified SQL database?",
     },
     {
-      label: "Internal Core Subnet Assets",
-      query: "List all devices in the internal core subnet",
-    },
-    {
-      label: "Unpatched CVE Exposure",
-      query: "Which devices have known CVEs?",
+      label: "Top Risk Node & How to Harden",
+      query: "Which node is most at risk and how do I harden this network?",
     },
     {
       label: "Test Guardrail: DELETE all connections (should block)",
@@ -28,7 +33,7 @@ const QUICK_PROMPTS: Array<{ label: string; query: string; danger?: boolean }> =
     },
   ];
 
-export function SOCCopilotChat() {
+export function SOCCopilotChat({ simulationData }: SOCCopilotChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -50,7 +55,7 @@ export function SOCCopilotChat() {
     setInput("");
     setLoading(true);
     try {
-      const res = await askCopilot(question);
+      const res = await askCopilot(question, simulationData);
       setMessages((m) => [
         ...m,
         { role: "copilot", text: res.answer, cypher: res.cypher_query },
