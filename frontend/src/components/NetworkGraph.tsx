@@ -28,6 +28,8 @@ interface NetworkGraphProps {
   pendingAction?: PendingAction | null;
   simulationStatus?: SimulationStatus;
   actionTaken?: string | null;
+  topologyMode?: "standby" | "demo" | "custom";
+  onLaunchDemo?: () => void;
 }
 
 const MIN_ZOOM = 0.45;
@@ -239,6 +241,8 @@ export function NetworkGraph({
   pendingAction,
   simulationStatus = "idle",
   actionTaken,
+  topologyMode = "demo",
+  onLaunchDemo,
 }: NetworkGraphProps) {
   const cyRef = useRef<Core | null>(null);
   const [liveTopology, setLiveTopology] = useState<NetworkTopologyFile | null>(
@@ -254,7 +258,7 @@ export function NetworkGraph({
   const [baselineEdgeCount, setBaselineEdgeCount] = useState<number>(0);
 
   useEffect(() => {
-    if (useMockData) return;
+    if (useMockData || topologyMode === "standby") return;
     let cancelled = false;
     setLoading(true);
     setLoadError("");
@@ -277,9 +281,12 @@ export function NetworkGraph({
     return () => {
       cancelled = true;
     };
-  }, [refreshSignal, retryTick]);
+  }, [refreshSignal, retryTick, topologyMode]);
 
   const effectiveGraph = useMemo(() => {
+    if (topologyMode === "standby") {
+      return { nodes: [], edges: [] };
+    }
     if (useMockData || !liveTopology) {
       return { nodes, edges };
     }
@@ -322,6 +329,7 @@ export function NetworkGraph({
       const isCritical =
         d.subnet === "internal_core" ||
         /auth|dc|db|sql|secret|classified/i.test(`${d.id} ${d.name}`);
+      const cveCount = d.cves?.length ?? 0;
 
       return {
         id: d.id,
@@ -331,8 +339,10 @@ export function NetworkGraph({
         status,
         ipAddress: d.ip,
         operatingSystem: d.os,
-        riskScore: isCritical ? 82 : 45,
-        vulnerabilities: [],
+        riskScore: Math.min(95, cveCount * 18 + (isCritical ? 48 : 28)),
+        vulnerabilities: (d.cves ?? []).map(
+          (c) => `Unpatched vulnerability (${c})`
+        ),
         knownCves: d.cves ?? [],
         openPorts: d.ports ?? [],
         isCriticalService: isCritical,
@@ -357,6 +367,7 @@ export function NetworkGraph({
 
     return { nodes: mappedNodes, edges: mappedEdges };
   }, [
+    topologyMode,
     nodes,
     edges,
     liveTopology,
@@ -652,11 +663,14 @@ export function NetworkGraph({
           </button>
         </div>
 
-        {!useMockData && loading && !liveTopology ? (
+        {!useMockData && loading && !liveTopology && topologyMode !== "standby" ? (
           <div className="graph-state-overlay">
             <p>Loading network topology...</p>
           </div>
-        ) : !useMockData && loadError && !liveTopology ? (
+        ) : !useMockData &&
+          loadError &&
+          !liveTopology &&
+          topologyMode !== "standby" ? (
           <div className="graph-state-overlay" role="alert">
             <p>{loadError}</p>
             <button
@@ -668,11 +682,60 @@ export function NetworkGraph({
             </button>
           </div>
         ) : effectiveGraph.nodes.length === 0 ? (
-          <div className="graph-state-overlay">
-            <p>
-              No network topology loaded yet — upload a network_topology.json
-              file to begin.
+          <div
+            className="graph-state-overlay"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              padding: "32px 24px",
+              gap: 14,
+            }}
+          >
+            <div
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: "50%",
+                background: "rgba(56, 189, 248, 0.14)",
+                border: "1.5px solid rgba(56, 189, 248, 0.5)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: "1.5rem",
+              }}
+            >
+              🛡️
+            </div>
+            <h3 style={{ margin: 0, fontSize: "1.15rem", color: "#f8fafc" }}>
+              Digital Twin Canvas Ready — Select a Topology Blueprint
+            </h3>
+            <p
+              style={{
+                margin: 0,
+                maxWidth: 540,
+                fontSize: "0.88rem",
+                color: "#94a3b8",
+                lineHeight: 1.5,
+              }}
+            >
+              Choose <strong>Mode A (20-Node Enterprise Demo)</strong> to
+              explore the pre-structured 4-tier Government Core network, or{" "}
+              <strong>Mode B (Upload Custom .json)</strong> above to simulate
+              your own network topology with 100% file-driven metrics.
             </p>
+            {onLaunchDemo && (
+              <button
+                type="button"
+                className="button button-primary"
+                onClick={onLaunchDemo}
+                style={{ marginTop: 4, padding: "9px 18px", fontWeight: 700 }}
+              >
+                🚀 Launch 20-Node Enterprise Demo Now
+              </button>
+            )}
           </div>
         ) : (
           <CytoscapeComponent

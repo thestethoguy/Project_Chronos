@@ -397,3 +397,50 @@ def test_copilot_how_are_you_network_overview_and_chronos_architecture(client):
     assert client.post("/copilot/ask", json={"question": "DELETE all connections"}).status_code == 422
 
 
+def test_load_demo_topology_restores_enterprise_template_after_custom_upload(client):
+    custom_small = {
+        "devices": [
+            {
+                "id": "custom_gw",
+                "name": "Custom Gateway",
+                "ip": "10.0.0.1",
+                "subnet": "public_dmz",
+                "ports": [443],
+                "os": "Linux",
+                "cves": [],
+            },
+            {
+                "id": "custom_db",
+                "name": "Custom Vault",
+                "ip": "10.0.1.10",
+                "subnet": "internal_core",
+                "ports": [5432],
+                "os": "Linux",
+                "cves": ["CVE-2024-9999"],
+            },
+        ],
+        "connections": [
+            {"source": "custom_gw", "target": "custom_db", "type": "TCP_LINK"},
+        ],
+    }
+    up = client.post(
+        "/upload_topology",
+        files={
+            "topology_file": (
+                "custom.json",
+                json.dumps(custom_small).encode("utf-8"),
+                "application/json",
+            )
+        },
+    )
+    assert up.status_code == 200
+    assert up.json()["deviceCount"] == 2
+
+    demo = client.post("/load_demo_topology")
+    assert demo.status_code == 200, demo.text
+    assert demo.json()["deviceCount"] == 20
+    topo = client.get("/topology").json()
+    assert len(topo["devices"]) == 20
+
+
+

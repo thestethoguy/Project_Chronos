@@ -107,7 +107,63 @@ export function topologyFileToNodesAndEdges(
   return { nodes, edges };
 }
 
-function buildRemediationItemsFromTopology(topo: NetworkTopologyFile) {
+export function computeTopologyBaselineRisk(
+  nodes: NetworkNode[],
+  edges: NetworkEdge[]
+): number {
+  if (nodes.length === 0) return 0;
+  const totalCves = nodes.reduce(
+    (sum, n) => sum + (n.knownCves?.length ?? 0),
+    0
+  );
+  const critCount = nodes.filter(
+    (n) => n.isCriticalService || n.riskScore >= 70
+  ).length;
+  const avgNodeRisk =
+    nodes.reduce((sum, n) => sum + (n.riskScore ?? 35), 0) / nodes.length;
+  const score = Math.round(
+    avgNodeRisk * 0.55 +
+      Math.min(28, totalCves * 4) +
+      Math.min(18, critCount * 2 + Math.floor(edges.length / 3))
+  );
+  return Math.max(12, Math.min(92, score));
+}
+
+export function buildStandbySimulationData(): SimulationData {
+  return {
+    simulationId: "SIM-STANDBY",
+    status: "idle",
+    riskScore: 0,
+    mttd: 0,
+    mttr: 0,
+    totalAssets: 0,
+    vulnerableAssets: 0,
+    compromisedAssets: 0,
+    currentStep: 0,
+    nodes: [],
+    edges: [],
+    remediations: [],
+    pending_action: null,
+    compromised_node: null,
+    mitre_tactic: null,
+    anomaly_score: 0,
+    red_report:
+      "[STANDBY] No topology blueprint loaded yet. Select 'Load 20-Node Enterprise Demo' or 'Upload Custom Topology (.json)' above to initialize the Digital Twin.",
+    blue_report:
+      "[STANDBY] Bounded-authority SOAR engine on standby. Select a topology mode above to compute baseline CVE posture and enable autonomous simulation.",
+    logs: [
+      {
+        id: "standby-log-1",
+        timestamp: new Date().toLocaleTimeString(),
+        message:
+          "System initialized in Dual-Mode Standby. Choose Pre-Structured Demo Mode or Upload Custom Topology (.json) to begin.",
+        type: "system",
+      },
+    ],
+  };
+}
+
+export function buildRemediationItemsFromTopology(topo: NetworkTopologyFile) {
   const withCves = topo.devices.filter((d) => d.cves && d.cves.length > 0);
   if (withCves.length === 0) {
     return topo.devices.slice(0, 3).map((d, idx) => ({
@@ -376,6 +432,10 @@ export const mockResetSimulation =
       const converted = topologyFileToNodesAndEdges(customTopology);
       state.nodes = converted.nodes;
       state.edges = converted.edges;
+      state.riskScore = computeTopologyBaselineRisk(
+        converted.nodes,
+        converted.edges
+      );
       state.remediations = buildRemediationItemsFromTopology(customTopology);
       state.totalAssets = converted.nodes.length;
       state.vulnerableAssets = converted.nodes.filter(
@@ -395,6 +455,24 @@ export const mockResetSimulation =
 
     return structuredClone(state);
   };
+
+export const mockLoadDemoTopology = async (): Promise<{
+  deviceCount: number;
+  connectionCount: number;
+}> => {
+  await wait(150);
+  customTopology = null;
+  state = structuredClone(initialMockData);
+  step = 0;
+  addLog(
+    `Loaded Pre-Structured Enterprise Demo Topology (${state.nodes.length} devices, ${state.edges.length} connections).`,
+    "system"
+  );
+  return {
+    deviceCount: state.nodes.length,
+    connectionCount: state.edges.length,
+  };
+};
 
 export const mockUploadTopology = async (
   file: File
@@ -416,6 +494,10 @@ export const mockUploadTopology = async (
   const converted = topologyFileToNodesAndEdges(raw);
   state.nodes = converted.nodes;
   state.edges = converted.edges;
+  state.riskScore = computeTopologyBaselineRisk(
+    converted.nodes,
+    converted.edges
+  );
   state.remediations = buildRemediationItemsFromTopology(raw);
   state.totalAssets = converted.nodes.length;
   state.vulnerableAssets = converted.nodes.filter(

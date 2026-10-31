@@ -15,9 +15,12 @@ import type {
 import { initialMockData } from "../data/mockData";
 
 import {
+  buildRemediationItemsFromTopology,
+  computeTopologyBaselineRisk,
   mockApproveAction,
   mockFetchTopology,
   mockGetSimulation,
+  mockLoadDemoTopology,
   mockPauseSimulation,
   mockRejectAction,
   mockResetSimulation,
@@ -277,18 +280,32 @@ export function adaptBackendResponse(
     backend.status
   );
 
+  const baselineRisk = topo
+    ? computeTopologyBaselineRisk(nodes, edges)
+    : initialMockData.riskScore;
+  const dynamicRiskScore =
+    status === "idle"
+      ? baselineRisk
+      : status === "completed"
+      ? Math.max(15, baselineRisk - 28)
+      : deriveRiskScore(backend);
+
+  const dynamicRemediations = topo
+    ? buildRemediationItemsFromTopology(topo)
+    : initialMockData.remediations;
+
   return {
     simulationId: backend.session_id
       ? `SIM-${backend.session_id.toUpperCase()}`
       : `SIM-${String(backend.cycles_run || 0).padStart(3, "0")}`,
     session_id: backend.session_id,
     status,
-    riskScore: deriveRiskScore(backend),
+    riskScore: dynamicRiskScore,
     currentStep: deriveStep(backend),
     nodes,
     edges,
     logs: buildLogs(backend),
-    remediations: initialMockData.remediations,
+    remediations: dynamicRemediations,
     pending_action: backend.pending_action ?? null,
     red_report: backend.red_report,
     blue_report: backend.blue_report,
@@ -311,6 +328,25 @@ export const fetchTopology = async (): Promise<NetworkTopologyFile> => {
   const response = await api.get<NetworkTopologyFile>("/topology");
   cachedLiveTopology = response.data;
   return response.data;
+};
+
+export const loadDemoTopology = async (): Promise<{
+  deviceCount: number;
+  connectionCount: number;
+}> => {
+  if (useMockData) {
+    return mockLoadDemoTopology();
+  }
+  try {
+    const response = await api.post<{
+      deviceCount: number;
+      connectionCount: number;
+    }>("/load_demo_topology");
+    await fetchTopology();
+    return response.data;
+  } catch {
+    return mockLoadDemoTopology();
+  }
 };
 
 export const uploadTopology = async (

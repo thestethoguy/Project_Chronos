@@ -9,12 +9,30 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 
-from backend.db import topology_store
+from backend.db import session_store, topology_store
 from backend.schemas.topology import NetworkTopologyFile
 
 router = APIRouter(tags=["topology"])
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024  # 2 MB: plenty for a topology, blocks abuse
+
+
+def _store_and_reset_session(topo_dict: dict) -> dict:
+    res = topology_store.store_topology(topo_dict)
+    try:
+        session_store.reset_session()
+    except Exception:  # noqa: BLE001
+        pass
+    return res
+
+
+def _load_demo_and_reset_session() -> dict:
+    res = topology_store.load_demo_topology()
+    try:
+        session_store.reset_session()
+    except Exception:  # noqa: BLE001
+        pass
+    return res
 
 
 @router.post("/upload_topology")
@@ -40,7 +58,12 @@ async def upload_topology(topology_file: UploadFile = File(...)):
         msgs = [f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()]
         raise HTTPException(status_code=422, detail="; ".join(msgs[:5]))
 
-    return await run_in_threadpool(topology_store.store_topology, topology.model_dump())
+    return await run_in_threadpool(_store_and_reset_session, topology.model_dump())
+
+
+@router.post("/load_demo_topology")
+async def load_demo_topology():
+    return await run_in_threadpool(_load_demo_and_reset_session)
 
 
 @router.get("/topology")

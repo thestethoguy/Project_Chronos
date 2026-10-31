@@ -130,6 +130,12 @@ def store_topology(topology: dict) -> dict:
     return {**counts, "storage": {"neo4j": neo4j_stored, "mirror": True}}
 
 
+def load_demo_topology() -> dict:
+    """Reload the bundled 20-node enterprise demo topology into the mirror (and Neo4j if reachable)."""
+    default_topo = _load_default()
+    return store_topology(default_topo)
+
+
 def has_device(node_id: str) -> bool:
     return any(d["id"] == node_id for d in get_topology()["devices"])
 
