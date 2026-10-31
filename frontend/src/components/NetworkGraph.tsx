@@ -2,13 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
 import type { Core, Stylesheet } from "cytoscape";
 import {
+  FiCpu,
+  FiDownload,
+  FiFolderPlus,
   FiLock,
   FiMaximize2,
   FiMinus,
   FiPlus,
+  FiRefreshCw,
   FiUnlock,
+  FiUploadCloud,
+  FiZap,
 } from "react-icons/fi";
-import { fetchTopology, useMockData } from "../services/api";
+import { fetchTopology, uploadTopology, useMockData } from "../services/api";
+import { extractErrorMessage } from "../services/topologyApi";
+import { downloadSampleCustomTopologyJson } from "./TopologyUploader";
 import type {
   NetworkEdge,
   NetworkNode,
@@ -29,7 +37,10 @@ interface NetworkGraphProps {
   simulationStatus?: SimulationStatus;
   actionTaken?: string | null;
   topologyMode?: "standby" | "demo" | "custom";
+  activeTopologyLabel?: string;
   onLaunchDemo?: () => void;
+  onUploadCustomFile?: (file: File) => Promise<void>;
+  onUnloadTopology?: () => void;
 }
 
 const MIN_ZOOM = 0.45;
@@ -242,9 +253,13 @@ export function NetworkGraph({
   simulationStatus = "idle",
   actionTaken,
   topologyMode = "demo",
+  activeTopologyLabel,
   onLaunchDemo,
+  onUploadCustomFile,
+  onUnloadTopology,
 }: NetworkGraphProps) {
   const cyRef = useRef<Core | null>(null);
+  const canvasFileInputRef = useRef<HTMLInputElement | null>(null);
   const [liveTopology, setLiveTopology] = useState<NetworkTopologyFile | null>(
     null
   );
@@ -252,13 +267,76 @@ export function NetworkGraph({
   const [loadError, setLoadError] = useState<string>("");
   const [retryTick, setRetryTick] = useState<number>(0);
 
+  // Direct Canvas Custom JSON Upload & Drag-and-Drop State
+  const [canvasDragOver, setCanvasDragOver] = useState<boolean>(false);
+  const [canvasUploading, setCanvasUploading] = useState<boolean>(false);
+  const [canvasScanStage, setCanvasScanStage] = useState<string>("");
+  const [canvasUploadError, setCanvasUploadError] = useState<string>("");
+
   // Scroll-wheel zoom is LOCKED by default so scrolling the dashboard never zooms the canvas
   const [zoomLocked, setZoomLocked] = useState<boolean>(true);
   const [zoomPercent, setZoomPercent] = useState<number>(100);
   const [baselineEdgeCount, setBaselineEdgeCount] = useState<number>(0);
 
+  const processCanvasCustomFile = useCallback(
+    async (selected: File | null) => {
+      setCanvasUploadError("");
+      if (!selected || canvasUploading) return;
+      if (!selected.name.toLowerCase().endsWith(".json")) {
+        setCanvasUploadError("Please select a valid .json topology file.");
+        return;
+      }
+      try {
+        const parsed = JSON.parse(await selected.text()) as {
+          devices?: unknown[];
+          connections?: unknown[];
+        };
+        if (
+          !Array.isArray(parsed.devices) ||
+          !Array.isArray(parsed.connections)
+        ) {
+          setCanvasUploadError(
+            "JSON file must contain 'devices' and 'connections' arrays."
+          );
+          return;
+        }
+      } catch {
+        setCanvasUploadError("That file is not valid JSON.");
+        return;
+      }
+
+      setCanvasUploading(true);
+      try {
+        setCanvasScanStage(
+          `Scanning & ingesting custom blueprint (${selected.name})...`
+        );
+        await new Promise((r) => setTimeout(r, 240));
+        if (onUploadCustomFile) {
+          await onUploadCustomFile(selected);
+        } else {
+          await uploadTopology(selected);
+        }
+        setCanvasScanStage("");
+      } catch (err) {
+        setCanvasUploadError(
+          extractErrorMessage(
+            err,
+            "Custom topology upload failed. Please check the file format."
+          )
+        );
+        setCanvasScanStage("");
+      } finally {
+        setCanvasUploading(false);
+        if (canvasFileInputRef.current) {
+          canvasFileInputRef.current.value = "";
+        }
+      }
+    },
+    [canvasUploading, onUploadCustomFile]
+  );
+
   useEffect(() => {
-    if (useMockData || topologyMode === "standby") return;
+    if (useMockData || topologyMode === "standby" || nodes.length > 0) return;
     let cancelled = false;
     setLoading(true);
     setLoadError("");
@@ -281,13 +359,13 @@ export function NetworkGraph({
     return () => {
       cancelled = true;
     };
-  }, [refreshSignal, retryTick, topologyMode]);
+  }, [refreshSignal, retryTick, topologyMode, nodes.length]);
 
   const effectiveGraph = useMemo(() => {
     if (topologyMode === "standby") {
       return { nodes: [], edges: [] };
     }
-    if (useMockData || !liveTopology) {
+    if (nodes.length > 0 || useMockData || !liveTopology) {
       return { nodes, edges };
     }
 
@@ -551,42 +629,164 @@ export function NetworkGraph({
 
   return (
     <section className="panel graph-panel">
+      {/* Hidden File Input for Direct Canvas Custom Topology (.json) Upload */}
+      <input
+        ref={canvasFileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const selected = e.target.files?.[0] ?? null;
+          void processCanvasCustomFile(selected);
+        }}
+      />
+
       <div className="panel-heading">
         <div>
           <p className="eyebrow">LIVE CYBER DIGITAL TWIN TOPOLOGY</p>
-          <h2>Multi-Tier Enterprise Network Architecture</h2>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <h2 style={{ margin: 0 }}>
+              Multi-Tier Enterprise Network Architecture
+            </h2>
+            {topologyMode !== "standby" && activeTopologyLabel && (
+              <span
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: 999,
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  background:
+                    topologyMode === "demo"
+                      ? "rgba(34, 197, 94, 0.14)"
+                      : "rgba(56, 189, 248, 0.16)",
+                  border:
+                    topologyMode === "demo"
+                      ? "1px solid rgba(34, 197, 94, 0.45)"
+                      : "1px solid rgba(56, 189, 248, 0.45)",
+                  color: topologyMode === "demo" ? "#4ade80" : "#38bdf8",
+                }}
+              >
+                {topologyMode === "demo" ? "🟢 DEMO" : "📂 CUSTOM"}:{" "}
+                {activeTopologyLabel}
+              </span>
+            )}
+          </div>
         </div>
 
-        <div className="legend">
-          <span>
-            <i className="legend-dmz" />
-            Public DMZ ({dmzCount})
-          </span>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: 8,
+          }}
+        >
+          {/* Quick Canvas Topology Switcher & Direct Upload Toolbar */}
+          {topologyMode !== "standby" && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                type="button"
+                className="copilot-chip"
+                onClick={() => canvasFileInputRef.current?.click()}
+                disabled={canvasUploading}
+                title="Upload a custom network_topology.json file directly onto the Digital Twin canvas"
+                style={{
+                  padding: "4px 10px",
+                  fontSize: "0.74rem",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                <FiUploadCloud />
+                {canvasUploading
+                  ? "Uploading .json..."
+                  : "Upload Custom .json"}
+              </button>
+              {topologyMode === "custom" && onLaunchDemo && (
+                <button
+                  type="button"
+                  className="copilot-chip"
+                  onClick={onLaunchDemo}
+                  title="Switch back to the 20-Node Enterprise Demo topology"
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "0.74rem",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <FiZap />
+                  Switch to 20-Node Demo
+                </button>
+              )}
+              {onUnloadTopology && (
+                <button
+                  type="button"
+                  className="copilot-chip"
+                  onClick={onUnloadTopology}
+                  title="Reset canvas back to Dual-Mode Standby selection"
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "0.74rem",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <FiRefreshCw />
+                  Standby / Switch
+                </button>
+              )}
+            </div>
+          )}
 
-          <span>
-            <i className="legend-default" />
-            Internal Core ({coreCount})
-          </span>
+          <div className="legend">
+            <span>
+              <i className="legend-dmz" />
+              Public DMZ ({dmzCount})
+            </span>
 
-          <span>
-            <i className="legend-compromised" />
-            Compromised ({compromisedCount})
-          </span>
+            <span>
+              <i className="legend-default" />
+              Internal Core ({coreCount})
+            </span>
 
-          <span>
-            <i className="legend-hitl" />
-            HITL Target
-          </span>
+            <span>
+              <i className="legend-compromised" />
+              Compromised ({compromisedCount})
+            </span>
 
-          <span>
-            <i className="legend-isolated" />
-            Quarantined
-          </span>
+            <span>
+              <i className="legend-hitl" />
+              HITL Target
+            </span>
 
-          <span>
-            <i className="legend-attack-path" />
-            Packet Attack Flow
-          </span>
+            <span>
+              <i className="legend-isolated" />
+              Quarantined
+            </span>
+
+            <span>
+              <i className="legend-attack-path" />
+              Packet Attack Flow
+            </span>
+          </div>
         </div>
       </div>
 
@@ -613,7 +813,28 @@ export function NetworkGraph({
         </div>
       </div>
 
-      <div className="graph-container">
+      <div
+        className="graph-container"
+        onDragOver={(e) => {
+          e.preventDefault();
+          setCanvasDragOver(true);
+        }}
+        onDragLeave={() => setCanvasDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setCanvasDragOver(false);
+          const dropped = e.dataTransfer.files?.[0] ?? null;
+          void processCanvasCustomFile(dropped);
+        }}
+        style={
+          canvasDragOver
+            ? {
+                outline: "2px dashed #38bdf8",
+                outlineOffset: "-4px",
+              }
+            : undefined
+        }
+      >
         {/* Radar Sweep Visual Overlay */}
         <div
           className={`graph-radar-overlay ${
@@ -692,6 +913,9 @@ export function NetworkGraph({
               textAlign: "center",
               padding: "32px 24px",
               gap: 14,
+              background: canvasDragOver
+                ? "rgba(14, 116, 144, 0.25)"
+                : undefined,
             }}
           >
             <div
@@ -715,26 +939,132 @@ export function NetworkGraph({
             <p
               style={{
                 margin: 0,
-                maxWidth: 540,
-                fontSize: "0.88rem",
+                maxWidth: 560,
+                fontSize: "0.86rem",
                 color: "#94a3b8",
                 lineHeight: 1.5,
               }}
             >
               Choose <strong>Mode A (20-Node Enterprise Demo)</strong> to
               explore the pre-structured 4-tier Government Core network, or{" "}
-              <strong>Mode B (Upload Custom .json)</strong> above to simulate
-              your own network topology with 100% file-driven metrics.
+              <strong>Mode B (Upload Custom Topology .json)</strong> directly
+              from this canvas (or drag &amp; drop a <code>.json</code> file
+              here) to simulate your own network with 100% file-driven metrics.
             </p>
-            {onLaunchDemo && (
+
+            {/* Dual-Mode Side-by-Side Selection Buttons Directly on Canvas */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                flexWrap: "wrap",
+                marginTop: 6,
+              }}
+            >
+              {onLaunchDemo && (
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={onLaunchDemo}
+                  disabled={canvasUploading}
+                  style={{
+                    padding: "10px 18px",
+                    fontWeight: 700,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <FiZap />
+                  🚀 Launch 20-Node Enterprise Demo
+                </button>
+              )}
+
               <button
                 type="button"
-                className="button button-primary"
-                onClick={onLaunchDemo}
-                style={{ marginTop: 4, padding: "9px 18px", fontWeight: 700 }}
+                className="button"
+                onClick={() => canvasFileInputRef.current?.click()}
+                disabled={canvasUploading}
+                style={{
+                  padding: "10px 18px",
+                  fontWeight: 700,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: "rgba(14, 116, 144, 0.35)",
+                  border: "1.5px solid rgba(56, 189, 248, 0.65)",
+                  color: "#e0f2fe",
+                }}
               >
-                🚀 Launch 20-Node Enterprise Demo Now
+                <FiFolderPlus />
+                {canvasUploading
+                  ? "Scanning Custom Blueprint..."
+                  : "📂 Upload Custom Topology (.json)"}
               </button>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 10,
+                flexWrap: "wrap",
+                marginTop: 2,
+              }}
+            >
+              <button
+                type="button"
+                className="copilot-chip"
+                onClick={downloadSampleCustomTopologyJson}
+                title="Download a sample 5-node custom_network_topology.json file to test custom upload"
+                style={{
+                  padding: "5px 12px",
+                  fontSize: "0.75rem",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <FiDownload />
+                Download Sample Custom .json Template
+              </button>
+              <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
+                or drag &amp; drop any <code>network_topology.json</code> onto
+                this canvas
+              </span>
+            </div>
+
+            {canvasScanStage && (
+              <p
+                style={{
+                  margin: "6px 0 0 0",
+                  color: "#38bdf8",
+                  fontSize: "0.82rem",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <FiCpu />
+                {canvasScanStage}
+              </p>
+            )}
+
+            {canvasUploadError && (
+              <p
+                role="alert"
+                style={{
+                  margin: "6px 0 0 0",
+                  color: "#f87171",
+                  fontSize: "0.82rem",
+                  fontWeight: 600,
+                }}
+              >
+                {canvasUploadError}
+              </p>
             )}
           </div>
         ) : (

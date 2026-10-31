@@ -39,6 +39,7 @@ import {
   resetSimulation,
   runPlaybook,
   startSimulation,
+  uploadTopology,
 } from "./services/api";
 
 import { buildStandbySimulationData } from "./services/mockSimulation";
@@ -184,6 +185,14 @@ function App() {
       await refreshSimulation();
     },
     [refreshSimulation]
+  );
+
+  const handleCustomFileUpload = useCallback(
+    async (file: File): Promise<void> => {
+      const result = await uploadTopology(file);
+      await handleCustomUploaded(file.name, result);
+    },
+    [handleCustomUploaded]
   );
 
   const handleUnloadTopology = useCallback((): void => {
@@ -546,7 +555,10 @@ function App() {
             simulationStatus={activeData.status}
             actionTaken={activeData.action_taken}
             topologyMode={topologyMode}
+            activeTopologyLabel={activeTopologyLabel}
             onLaunchDemo={() => void handleLaunchDemo()}
+            onUploadCustomFile={handleCustomFileUpload}
+            onUnloadTopology={handleUnloadTopology}
           />
 
           <RemediationQueue
@@ -566,6 +578,7 @@ function App() {
             topologySourceName={topologySourceName}
             topologyRefreshKey={topologyRefreshKey}
             onLaunchDemo={() => void handleLaunchDemo()}
+            onUploadCustomFile={handleCustomFileUpload}
             onScrollToUploader={() => {
               document
                 .getElementById("topology-uploader-section")

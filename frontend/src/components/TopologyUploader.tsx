@@ -91,6 +91,20 @@ const SAMPLE_CUSTOM_TOPOLOGY_JSON = JSON.stringify(
   2
 );
 
+export function downloadSampleCustomTopologyJson(): void {
+  const blob = new Blob([SAMPLE_CUSTOM_TOPOLOGY_JSON], {
+    type: "application/json",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "custom_network_topology.json";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 interface TopologyUploaderProps {
   mode: TopologyEntryMode;
   activeLabel: string;
@@ -208,17 +222,7 @@ export function TopologyUploader({
   }
 
   function handleDownloadSampleTemplate() {
-    const blob = new Blob([SAMPLE_CUSTOM_TOPOLOGY_JSON], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "custom_network_topology.json";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadSampleCustomTopologyJson();
   }
 
   return (

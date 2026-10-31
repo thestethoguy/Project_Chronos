@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  FiDownload,
   FiFolderPlus,
   FiKey,
   FiLock,
@@ -15,7 +16,12 @@ import {
   getStoredGeminiKey,
   setStoredGeminiKey,
 } from "../services/copilotApi";
-import type { TopologyEntryMode } from "./TopologyUploader";
+import { uploadTopology } from "../services/api";
+import { extractErrorMessage } from "../services/topologyApi";
+import {
+  downloadSampleCustomTopologyJson,
+  TopologyEntryMode,
+} from "./TopologyUploader";
 import type { SimulationData } from "../types/simulation";
 
 type Message =
@@ -35,6 +41,7 @@ interface SOCCopilotChatProps {
   topologySourceName?: string;
   topologyRefreshKey?: number;
   onLaunchDemo?: () => void;
+  onUploadCustomFile?: (file: File) => Promise<void>;
   onScrollToUploader?: () => void;
 }
 
@@ -44,11 +51,14 @@ export function SOCCopilotChat({
   topologySourceName,
   topologyRefreshKey = 0,
   onLaunchDemo,
+  onUploadCustomFile,
   onScrollToUploader,
 }: SOCCopilotChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [copilotUploading, setCopilotUploading] = useState(false);
+  const [copilotUploadError, setCopilotUploadError] = useState("");
   const [showKeyConfig, setShowKeyConfig] = useState(false);
   const [geminiKey, setGeminiKey] = useState<string>(() =>
     getStoredGeminiKey()
@@ -59,7 +69,37 @@ export function SOCCopilotChat({
   );
 
   const listRef = useRef<HTMLDivElement | null>(null);
+  const copilotFileInputRef = useRef<HTMLInputElement | null>(null);
   const prevLenRef = useRef<number>(0);
+
+  async function handleCopilotCustomFileChange(
+    e: React.ChangeEvent<HTMLInputElement>
+  ) {
+    const selected = e.target.files?.[0] ?? null;
+    setCopilotUploadError("");
+    if (!selected || copilotUploading) return;
+    if (!selected.name.toLowerCase().endsWith(".json")) {
+      setCopilotUploadError("Please select a valid .json topology file.");
+      return;
+    }
+    setCopilotUploading(true);
+    try {
+      if (onUploadCustomFile) {
+        await onUploadCustomFile(selected);
+      } else {
+        await uploadTopology(selected);
+      }
+    } catch (err) {
+      setCopilotUploadError(
+        extractErrorMessage(err, "Upload failed. Check the JSON file format.")
+      );
+    } finally {
+      setCopilotUploading(false);
+      if (copilotFileInputRef.current) {
+        copilotFileInputRef.current.value = "";
+      }
+    }
+  }
 
   const effectiveMode: TopologyEntryMode =
     topologyMode ??
@@ -274,6 +314,13 @@ export function SOCCopilotChat({
 
   return (
     <section className="panel side-panel-section copilot-panel">
+      <input
+        ref={copilotFileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: "none" }}
+        onChange={(e) => void handleCopilotCustomFileChange(e)}
+      />
       <div className="panel-heading compact">
         <div>
           <p className="eyebrow">AI SOC SPECIALIST &amp; GRAPH ASSISTANT</p>
@@ -465,12 +512,13 @@ export function SOCCopilotChat({
               <button
                 type="button"
                 className="copilot-chip"
+                disabled={copilotUploading}
                 onClick={() => {
-                  onScrollToUploader?.();
-                  const fileInput = document.getElementById(
-                    "topology-file"
-                  ) as HTMLInputElement | null;
-                  fileInput?.focus();
+                  if (copilotFileInputRef.current) {
+                    copilotFileInputRef.current.click();
+                  } else {
+                    onScrollToUploader?.();
+                  }
                 }}
                 style={{
                   padding: "6px 12px",
@@ -481,9 +529,40 @@ export function SOCCopilotChat({
                 }}
               >
                 <FiFolderPlus />
-                Upload Custom Topology (.json)
+                {copilotUploading
+                  ? "Uploading .json..."
+                  : "Upload Custom Topology (.json)"}
+              </button>
+              <button
+                type="button"
+                className="copilot-chip"
+                onClick={downloadSampleCustomTopologyJson}
+                title="Download a sample custom_network_topology.json file"
+                style={{
+                  padding: "6px 10px",
+                  fontSize: "0.76rem",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                <FiDownload />
+                Sample .json
               </button>
             </div>
+            {copilotUploadError && (
+              <p
+                role="alert"
+                style={{
+                  margin: 0,
+                  color: "#f87171",
+                  fontSize: "0.76rem",
+                  fontWeight: 600,
+                }}
+              >
+                {copilotUploadError}
+              </p>
+            )}
           </div>
         ) : (
           messages.map((m, i) => (
