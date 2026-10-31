@@ -370,6 +370,13 @@ Built by **Team Future Builders 2.0**:
 
 | Name | GitHub |
 |---|---|
+v2(Phase 2)
+| Aman Aaryan | [thestethoguy](https://github.com/thestethoguy) |
+| Divyansh Shukla | [DivyanshShukla001](https://github.com/DivyanshShukla001) |
+| Garv Rai | [garvrai-cloud](https://github.com/garvrai-cloud). |
+| Anoushka Saha | [sanoushka](https://github.com/sanoushka) |
+
+v1(Phase 1)
 | Aman Aaryan | [thestethoguy](https://github.com/thestethoguy) |
 | Sivak Singh | [sivaksingh00](https://github.com/sivaksingh00) |
 | Rishabh Kumar | [riszabh](https://github.com/riszabh) |
