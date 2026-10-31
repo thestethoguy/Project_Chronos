@@ -1,20 +1,28 @@
 import type { SimulationStatus } from "../types/simulation";
+import { ChronosEmblem } from "./ChronosEmblem";
 
 interface HeaderProps {
   status: SimulationStatus;
   simulationId: string;
+  onReplayIntro?: () => void;
 }
 
 export function Header({
   status,
   simulationId,
+  onReplayIntro,
 }: HeaderProps) {
   const statusLabel = status.toUpperCase();
 
   return (
     <header className="app-header">
       <div className="brand-section">
-        <div className="brand-icon">C</div>
+        <div
+          className="brand-emblem-container"
+          title="Project Chronos — Autonomous Cyber-Resilience Digital Twin Emblem"
+        >
+          <ChronosEmblem size={58} animated={true} />
+        </div>
 
         <div>
           <p className="eyebrow">
@@ -31,6 +39,20 @@ export function Header({
       </div>
 
       <div className="header-status">
+        {onReplayIntro && (
+          <>
+            <button
+              type="button"
+              className="copilot-chip chronos-replay-intro-btn"
+              onClick={onReplayIntro}
+              title="Replay the Project Chronos Holographic Initialization Sequence"
+            >
+              ⚡ Replay Intro
+            </button>
+            <div className="header-divider" />
+          </>
+        )}
+
         <div className="status-information">
           <span
             className={`status-dot status-${status}`}

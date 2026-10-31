@@ -14,6 +14,8 @@ import {
 } from "react-icons/fi";
 
 import { Header } from "./components/Header";
+import { ChronosIntroSplash } from "./components/ChronosIntroSplash";
+import { ChronosCornerHolograms } from "./components/ChronosCornerHolograms";
 import { RiskSummary } from "./components/RiskSummary";
 import {
   TopologyEntryMode,
@@ -47,6 +49,7 @@ import type {
 } from "./types/simulation";
 
 function App() {
+  const [introVisible, setIntroVisible] = useState<boolean>(true);
   const [topologyMode, setTopologyMode] =
     useState<TopologyEntryMode>("standby");
   const [activeTopologyLabel, setActiveTopologyLabel] = useState<string>(
@@ -337,9 +340,17 @@ function App() {
 
   return (
     <main className="app-shell">
+      <ChronosIntroSplash
+        visible={introVisible}
+        onComplete={() => setIntroVisible(false)}
+      />
+
+      <ChronosCornerHolograms />
+
       <Header
         status={activeData.status}
         simulationId={activeData.simulationId}
+        onReplayIntro={() => setIntroVisible(true)}
       />
 
       {error && (
