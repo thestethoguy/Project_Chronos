@@ -369,3 +369,31 @@ def test_copilot_custom_uploaded_wifi_topology_multi_hop_and_device_qa(client):
     )
     assert r_block.status_code == 422
 
+
+def test_copilot_how_are_you_network_overview_and_chronos_architecture(client):
+    r_how = client.post("/copilot/ask", json={"question": "how are you"})
+    assert r_how.status_code == 200, r_how.text
+    how_body = r_how.json()
+    assert how_body["conversational"] is True
+    assert "readiness" in how_body["answer"].lower() or "monitoring" in how_body["answer"].lower()
+
+    r_net = client.post("/copilot/ask", json={"question": "tell me about the network"})
+    assert r_net.status_code == 200, r_net.text
+    net_body = r_net.json()
+    assert net_body["conversational"] is True
+    assert "public_dmz" in net_body["answer"].lower() or "dmz" in net_body["answer"].lower()
+    assert "internal_core" in net_body["answer"].lower() or "core" in net_body["answer"].lower()
+    assert "cve" in net_body["answer"].lower()
+
+    r_arch = client.post(
+        "/copilot/ask",
+        json={"question": "what is project chronos and how do the red and blue agents work?"},
+    )
+    assert r_arch.status_code == 200, r_arch.text
+    arch_body = r_arch.json()
+    assert "Red Agent" in arch_body["answer"] and "Blue Agent" in arch_body["answer"]
+    assert "Isolation Forest" in arch_body["answer"]
+
+    assert client.post("/copilot/ask", json={"question": "DELETE all connections"}).status_code == 422
+
+

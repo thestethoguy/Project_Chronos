@@ -38,8 +38,36 @@ _PUBLIC = re.compile(r"\b(public|dmz|external|internet[- ]facing|perimeter)\b", 
 _INTERNAL = re.compile(r"\b(internal|core|secure|restricted|private)\b", re.I)
 
 _GREETING_RE = re.compile(
-    r"\b(hi|hello|hey|howdy|namaste|hola|greetings|good\s+(?:morning|afternoon|evening)|"
-    r"who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|help|capabilities|introduce\s+yourself)\b",
+    r"\b(hi|hello|hey|howdy|namaste|hola|greetings|yo|sup|good\s+(?:morning|afternoon|evening|night|day)|"
+    r"how\s+are\s+you|how's\s+it\s+going|hows\s+it\s+going|how\s+are\s+things|what's\s+up|whats\s+up|"
+    r"how\s+do\s+you\s+do|thank\s+you|thanks|thx|good\s+job|well\s+done|awesome|great\s+work|"
+    r"bye|goodbye|see\s+you|who\s+are\s+you|what\s+are\s+you|who\s+(?:made|built|created)\s+you|"
+    r"what\s+can\s+you\s+do|help\b|capabilities|introduce\s+yourself)\b",
+    re.I,
+)
+
+_CHRONOS_ARCH_RE = re.compile(
+    r"\b(project\s+chronos|what\s+is\s+chronos|about\s+chronos|how\s+does\s+(?:this|the)\s+(?:simulation|system|app|dashboard|platform)\s+work|"
+    r"approve\s+(?:vs|or|versus)\s+reject|what\s+happens\s+if\s+i\s+(?:click\s+)?(?:approve|reject)|"
+    r"what\s+is\s+(?:isolation\s+forest|rag|hitl|bounded\s+authority|crewai)|"
+    r"how\s+do\s+(?:the\s+)?(?:red|blue)\s+(?:and\s+(?:blue|red)\s+)?agents?\s+work|system\s+architecture)\b",
+    re.I,
+)
+
+_NETWORK_OVERVIEW_RE = re.compile(
+    r"\b(tell\s+me\s+about\s+(?:the|this)\s+(?:network|topology|graph|infrastructure|environment)|"
+    r"describe\s+(?:the|this)\s+(?:network|topology|graph)|"
+    r"(?:overview|summary|breakdown|tour|walkthrough)\s+of\s+(?:the|this)\s+(?:network|topology)|"
+    r"network\s+(?:overview|summary|breakdown|details|info|architecture)|"
+    r"topology\s+(?:overview|summary|breakdown|details|info)|"
+    r"what\s+(?:is| sits)\s+in\s+(?:the|this)\s+(?:network|topology))\b",
+    re.I,
+)
+
+_CONVERSATIONAL_FALLBACK_RE = re.compile(
+    r"\b(what|how|why|who|where|when|which|can|could|would|should|is|are|do|does|did|"
+    r"tell|explain|describe|understand|mean|think|know|please|you|your|me|my|we|this|that|"
+    r"safe|secure|attack|defend|defense|threat|incident|alert|score|log|audit|playbook|cloud|aws)\b",
     re.I,
 )
 
@@ -294,7 +322,21 @@ def rule_based_plan(
             "cypher": "MATCH (d:Device) RETURN count(d) AS devices",
         }
 
-    # 4. Behavioral / Simulation Status / Explainability questions
+    # 4. Project Chronos Architecture & How-It-Works questions
+    if _CHRONOS_ARCH_RE.search(ql):
+        return {
+            "intent": "chronos_arch",
+            "cypher": "MATCH (d:Device) RETURN d.id AS id, d.name AS name, d.ip AS ip, d.os AS os",
+        }
+
+    # 5. Full Network / Topology Overview ("tell me about the network", "describe the network")
+    if _NETWORK_OVERVIEW_RE.search(ql):
+        return {
+            "intent": "network_overview",
+            "cypher": "MATCH (d:Device) RETURN d.id AS id, d.name AS name, d.ip AS ip, d.os AS os, d.subnet AS subnet, d.cves AS cves",
+        }
+
+    # 6. Behavioral / Simulation Status / Explainability questions
     if _BEHAVIORAL_RE.search(ql) and not (ids and has_reach_kw and not is_explain):
         return {
             "intent": "behavioral_explain",
@@ -305,7 +347,7 @@ def rule_based_plan(
             ),
         }
 
-    # 5. Risk, Vulnerability Ranking & Network Hardening questions
+    # 7. Risk, Vulnerability Ranking & Network Hardening questions
     if _RISK_HARDEN_RE.search(ql):
         return {
             "intent": "risk_and_hardening",
@@ -316,7 +358,7 @@ def rule_based_plan(
             ),
         }
 
-    # 6. Greetings, Identity & Help
+    # 8. Greetings, Small Talk ("how are you", "thanks", "hello"), Identity & Help
     if _GREETING_RE.search(ql) and not ids:
         return {
             "intent": "greeting",
@@ -450,7 +492,14 @@ def rule_based_plan(
         ql,
     ):
         return {
-            "intent": "all_devices",
+            "intent": "network_overview",
+            "cypher": "MATCH (d:Device) RETURN d.id AS id, d.name AS name, d.ip AS ip, d.os AS os, d.subnet AS subnet, d.cves AS cves",
+        }
+
+    # 13. General English conversational fallback (never reject normal human questions with 422!)
+    if _CONVERSATIONAL_FALLBACK_RE.search(ql):
+        return {
+            "intent": "conversational_general",
             "cypher": "MATCH (d:Device) RETURN d.id AS id, d.name AS name, d.ip AS ip, d.os AS os",
         }
 
@@ -500,7 +549,14 @@ def run_on_mirror(plan: dict, topology: dict) -> list[dict]:
         ]
     if intent in ("all_connections", "behavioral_explain"):
         return [{"source": c["source"], "target": c["target"], "type": c.get("type")} for c in conns]
-    if intent in ("all_devices", "greeting", "risk_and_hardening"):
+    if intent in (
+        "all_devices",
+        "greeting",
+        "risk_and_hardening",
+        "chronos_arch",
+        "network_overview",
+        "conversational_general",
+    ):
         return [pick(d, "id", "name", "ip", "os", "subnet", "ports", "cves") for d in devices]
     raise ValueError(f"Unsupported offline intent: {intent}")
 
@@ -564,24 +620,85 @@ def summarize_offline(
     intent = (plan or {}).get("intent", "")
     ql = (question or "").lower()
 
-    # 1. GREETING / HELP / IDENTITY
+    # 1. GREETING / SMALL TALK ("how are you", "thanks", "hello") / HELP / IDENTITY
     if intent == "greeting":
         dmz = [d for d in devices if d.get("subnet") == "public_dmz"]
         core = [d for d in devices if d.get("subnet") == "internal_core"]
+        cve_devs = [d for d in devices if d.get("cves")]
         sample_names = ", ".join(f"{d.get('name', d['id'])} ({d['id']})" for d in devices[:4])
         status = session.get("status", "idle")
         pa = session.get("pending_action")
         sim_note = (
-            f"Simulation is currently AWAITING APPROVAL to sever {pa['source']} -> {pa['target']}."
+            f"The simulation is currently AWAITING APPROVAL to sever {pa['source']} -> {pa['target']}."
             if status == "awaiting_approval" and pa
-            else f"Simulation status is currently '{status}'."
+            else f"The simulation status is currently '{status}'."
         )
+        if re.search(r"how\s+are\s+you|how's\s+it\s+going|hows\s+it\s+going|how\s+are\s+things|what's\s+up|whats\s+up", ql):
+            return (
+                f"I'm doing great and operating at 100% readiness, thank you for asking! "
+                f"I am actively monitoring your loaded network topology of {len(devices)} device(s) "
+                f"({len(dmz)} in public_dmz, {len(core)} in internal_core, {len(cve_devs)} with known CVEs) "
+                f"and {len(conns)} network connection(s). {sim_note} "
+                f"How can I help you analyze or defend the network today?"
+            )
+        if re.search(r"thank\s+you|thanks|thx|good\s+job|well\s+done|awesome|great\s+work", ql):
+            return (
+                f"You're very welcome! I'm always here to help keep your {len(devices)}-device topology secure. "
+                f"Feel free to ask me about any device, attack corridor, CVE exposure, or simulation decision!"
+            )
+        if re.search(r"who\s+(?:made|built|created)\s+you", ql):
+            return (
+                f"I was built as the AI SOC Copilot for Project Chronos (Phase 2) — an autonomous Purple-Team "
+                f"Digital Twin & SOAR governance platform combining CrewAI Red/Blue agents, Isolation Forest ML, "
+                f"768-dim local RAG incident retrieval, AWS cloud remediation drafting, and Neo4j graph intelligence."
+            )
         return (
             f"Hello! I am the Project Chronos SOC Copilot — your read-only graph & incident intelligence assistant. "
             f"Right now, the active topology has {len(devices)} device(s) ({len(dmz)} in public_dmz, "
             f"{len(core)} in internal_core) and {len(conns)} network connection(s), including {sample_names}. "
             f"{sim_note} You can ask me about any device, multi-hop attack paths, CVE exposures, why the Red/Blue "
             f"agents acted, or how to harden this network!"
+        )
+
+    # 1B. PROJECT CHRONOS ARCHITECTURE & HOW-IT-WORKS
+    if intent == "chronos_arch":
+        dmz = [d for d in devices if d.get("subnet") == "public_dmz"]
+        core = [d for d in devices if d.get("subnet") == "internal_core"]
+        return (
+            f"Project Chronos (Phase 2) is an Autonomous AI Purple-Team Digital Twin & Bounded-Authority SOAR Platform "
+            f"currently monitoring {len(devices)} devices ({len(dmz)} public_dmz, {len(core)} internal_core) and {len(conns)} connections:\n"
+            f"1) Red Agent (Offensive Adversary Emulation): Starts at a DMZ foothold and uses graph_scan_neighbors() "
+            f"to discover real multi-hop lateral movement paths (MITRE T1550.002 Pass-the-Hash) toward core assets without hallucinating nodes.\n"
+            f"2) Blue Agent (Bounded-Authority SOAR Defense): Follows a mandatory 4-step protocol — "
+            f"(Step 1) Isolation Forest ML anomaly scoring (ml_score_anomaly), "
+            f"(Step 2) 768-dim Vector RAG retrieval over 16 historical cyber incidents (rag_retrieve_incidents), "
+            f"(Step 3) AWS IAM/EC2 dry-run remediation drafting (executed=False), and "
+            f"(Step 4) Human-in-the-Loop (HITL) Approval Gate where you click Approve (severs the compromised link) or Reject (keeps link intact)."
+        )
+
+    # 1C. COMPREHENSIVE NETWORK / TOPOLOGY OVERVIEW ("tell me about the network")
+    if intent in ("network_overview", "conversational_general"):
+        dmz = [d for d in devices if d.get("subnet") == "public_dmz"]
+        core = [d for d in devices if d.get("subnet") == "internal_core"]
+        cve_devs = [d for d in devices if d.get("cves")]
+        total_cves = sum(len(d.get("cves") or []) for d in devices)
+        bridges = [
+            f"{c['source']} -> {c['target']} ({c.get('type', 'LINK')})"
+            for c in conns
+            if by_id.get(c["source"], {}).get("subnet") == "public_dmz"
+            and by_id.get(c["target"], {}).get("subnet") == "internal_core"
+        ]
+        dmz_list = ", ".join(f"{d.get('name', d['id'])} ({d['id']}, {d.get('ip')})" for d in dmz[:5])
+        core_list = ", ".join(f"{d.get('name', d['id'])} ({d['id']}, {d.get('ip')})" for d in core[:6])
+        cve_list = ", ".join(f"{d['id']} ({', '.join(d.get('cves') or [])})" for d in cve_devs[:6])
+        status = session.get("status", "idle")
+        return (
+            f"Network Topology Overview ({len(devices)} Devices, {len(conns)} Active Connections | Status: '{status}'):\n"
+            f"• Public DMZ Perimeter ({len(dmz)} devices): {dmz_list or 'none'}.\n"
+            f"• Internal Core Subnet ({len(core)} devices): {core_list or 'none'}{' ...' if len(core) > 6 else ''}.\n"
+            f"• Cross-Subnet Chokepoints (DMZ -> Core): {', '.join(bridges[:5]) if bridges else 'No direct DMZ-to-Core bridges'}.\n"
+            f"• Vulnerability Posture: {len(cve_devs)} device(s) carry {total_cves} total CVE(s) ({cve_list or '0 CVEs'}). "
+            f"Ask me about any specific device ID, reachability path, or how to harden the highest-risk nodes!"
         )
 
     # 2. BEHAVIORAL / SIMULATION STATUS / EXPLAINABILITY
